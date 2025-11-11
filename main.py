@@ -50,7 +50,7 @@ class Form(StatesGroup):
     waiting_for_export_end = State()
 
 # ВЫБОР ХРАНИЛИЩА
-storage_type = os.getenv('STORAGE_TYPE', 'sqlite').lower()
+storage_type = os.getenv('STORAGE_TYPE', 'google_sheets').lower()
 
 if storage_type == 'google_sheets':
     try:
@@ -58,6 +58,7 @@ if storage_type == 'google_sheets':
         logger.info("✅ Using Google Sheets storage")
     except Exception as e:
         logger.error(f"❌ Failed to use Google Sheets: {e}")
+        # Fallback to SQLite если Google Sheets не работает
         from database import db_manager as storage
         add_shift = storage.add_shift
         update_value = storage.update_value
@@ -72,8 +73,11 @@ else:
     check_shift_exists = storage.check_shift_exists
     logger.info("✅ Using SQLite storage")
 
-# Импортируем функции для статистики и экспорта
-from database import db_manager
+# Импортируем функции для статистики и экспорта (только для SQLite)
+try:
+    from database import db_manager
+except ImportError:
+    db_manager = None
 
 # ВРЕМЕННО ОТКЛЮЧАЕМ ПРОВЕРКУ ДОСТУПА
 def check_access(message: types.Message):
@@ -96,7 +100,8 @@ async def start_cmd(msg: types.Message):
         "/export — экспорт данных за период\n"
         "/myid — показать мой ID\n"
         "/help — показать это сообщение\n"
-        f"\n💾 Хранилище: {storage_info}"
+        f"\n💾 Хранилище: {storage_info}\n"
+        "💰 Формула прибыли: (часы × 220) + чаевые + (выручка × 0.015)"
     )
     await msg.answer(text)
 
@@ -368,10 +373,13 @@ async def process_profit_date(msg: types.Message, state: FSMContext):
         return
 
     try:
-        profit_float = float(profit_value.replace(",", "."))
+        profit_float = float(profit_value)
+        logger.info(f"💰 Final profit calculation: {profit_float} for {clean_date}")
     except ValueError:
+        logger.error(f"❌ Cannot convert profit to float: {profit_value}")
         profit_float = 0
 
+    # Обновленные сообщения с учетом новой формулы
     if profit_float < 4000:
         text = f"📊 Твоя прибыль за {clean_date}: {profit_float:.2f}₽.\nНе расстраивайся, котик 🐾 — ты отлично поработала!"
     elif 4000 <= profit_float <= 6000:
@@ -382,13 +390,17 @@ async def process_profit_date(msg: types.Message, state: FSMContext):
     await msg.answer(text)
     await state.clear()
 
-# STATS FLOW
+# STATS FLOW - только для SQLite
 @dp.message(Command("stats"))
 async def stats_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
     
     if storage_type == 'google_sheets':
         await msg.answer("❌ Статистика временно недоступна при использовании Google Sheets. Используй SQLite хранилище.")
+        return
+        
+    if not db_manager:
+        await msg.answer("❌ Модуль статистики недоступен")
         return
         
     await msg.answer("Введи начальную дату для статистики (ДД.ММ.ГГГГ):")
@@ -441,13 +453,17 @@ async def process_stats_end(msg: types.Message, state: FSMContext):
     
     await state.clear()
 
-# EXPORT FLOW
+# EXPORT FLOW - только для SQLite
 @dp.message(Command("export"))
 async def export_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
     
     if storage_type == 'google_sheets':
         await msg.answer("❌ Экспорт временно недоступен при использовании Google Sheets. Используй SQLite хранилище.")
+        return
+        
+    if not db_manager:
+        await msg.answer("❌ Модуль экспорта недоступен")
         return
         
     await msg.answer("Введи начальную дату для экспорта (ДД.ММ.ГГГГ):")
