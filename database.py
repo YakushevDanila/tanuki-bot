@@ -1,121 +1,209 @@
-import aiosqlite
-import psycopg2
-import psycopg2.extras
+import sqlite3
+import logging
+from datetime import datetime
+import json
 import os
-from config import DATABASE_URL, SQLITE_PATH
 
+logger = logging.getLogger(__name__)
 
-async def init_db():
-    """—ÓÁ‰‡ÌËÂ Ú‡·ÎËˆ ÔË Á‡ÔÛÒÍÂ"""
-    if DATABASE_URL:
-        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-        cur = conn.cursor()
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            telegram_id BIGINT UNIQUE,
-            name TEXT
-        );
-        CREATE TABLE IF NOT EXISTS shifts (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER,
-            date TEXT,
-            start_time TEXT,
-            end_time TEXT,
-            revenue REAL DEFAULT 0,
-            tips REAL DEFAULT 0,
-            hours REAL DEFAULT 0,
-            filled INTEGER DEFAULT 0
-        );
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-    else:
-        async with aiosqlite.connect(SQLITE_PATH) as db:
-            await db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY,
-                telegram_id INTEGER UNIQUE,
-                name TEXT
-            )""")
-            await db.execute("""
-            CREATE TABLE IF NOT EXISTS shifts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                date TEXT,
-                start_time TEXT,
-                end_time TEXT,
-                revenue REAL DEFAULT 0,
-                tips REAL DEFAULT 0,
-                hours REAL DEFAULT 0,
-                filled INTEGER DEFAULT 0
-            )""")
-            await db.commit()
+class DatabaseManager:
+    def __init__(self, db_path='shifts.db'):
+        self.db_path = db_path
+        self._init_db()
 
+    def _init_db(self):
+        """Initialize database"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS shifts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date TEXT UNIQUE NOT NULL,
+                        start_time TEXT NOT NULL,
+                        end_time TEXT NOT NULL,
+                        revenue REAL DEFAULT 0,
+                        tips REAL DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                # Create index for fast date search
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_date ON shifts(date)
+                ''')
+                
+                conn.commit()
+            logger.info("‚úÖ SQLite database initialized")
+        except Exception as e:
+            logger.error(f"‚ùå Database initialization error: {e}")
 
-async def add_user(telegram_id, name):
-    if DATABASE_URL:
-        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-        cur = conn.cursor()
-        cur.execute("INSERT INTO users (telegram_id, name) VALUES (%s, %s) ON CONFLICT (telegram_id) DO NOTHING",
-                    (telegram_id, name))
-        conn.commit()
-        cur.close()
-        conn.close()
-    else:
-        async with aiosqlite.connect(SQLITE_PATH) as db:
-            await db.execute("INSERT OR IGNORE INTO users (telegram_id, name) VALUES (?, ?)", (telegram_id, name))
-            await db.commit()
+    def _get_connection(self):
+        """Get database connection"""
+        return sqlite3.connect(self.db_path)
 
+    async def add_shift(self, date_msg, start, end):
+        """Add shift to database"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO shifts (date, start_time, end_time, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (date_msg, start, end))
+                conn.commit()
+            
+            logger.info(f"‚úÖ Shift added to database: {date_msg}")
+            return True
+        except Exception as e:
+            logger.error(f"‚ùå Error adding shift to database: {e}")
+            return False
 
-async def add_shift(user_id, date, start, end):
-    if DATABASE_URL:
-        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-        cur = conn.cursor()
-        cur.execute("INSERT INTO shifts (user_id, date, start_time, end_time) VALUES (%s, %s, %s, %s)",
-                    (user_id, date, start, end))
-        conn.commit()
-        cur.close()
-        conn.close()
-    else:
-        async with aiosqlite.connect(SQLITE_PATH) as db:
-            await db.execute("INSERT INTO shifts (user_id, date, start_time, end_time) VALUES (?, ?, ?, ?)",
-                             (user_id, date, start, end))
-            await db.commit()
+    async def update_value(self, date_msg, field, value):
+        """Update value in database"""
+        try:
+            field_mapping = {
+                '–Ω–∞—á–∞–ª–æ': 'start_time',
+                '–∫–æ–Ω–µ—Ü': 'end_time',
+                '–≤—ã—Ä—É—á–∫–∞': 'revenue',
+                '—á–∞–π': 'tips'
+            }
+            
+            db_field = field_mapping.get(field.lower())
+            if not db_field:
+                logger.error(f"‚ùå Unknown field: {field}")
+                return False
 
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                if db_field in ['revenue', 'tips']:
+                    # For numeric fields
+                    try:
+                        numeric_value = float(value)
+                    except ValueError:
+                        logger.error(f"‚ùå Invalid numeric value: {value}")
+                        return False
+                    
+                    cursor.execute(f'''
+                        UPDATE shifts SET {db_field} = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE date = ?
+                    ''', (numeric_value, date_msg))
+                else:
+                    # For text fields
+                    cursor.execute(f'''
+                        UPDATE shifts SET {db_field} = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE date = ?
+                    ''', (value, date_msg))
+                
+                if cursor.rowcount == 0:
+                    logger.warning(f"‚ùå No shift found for date: {date_msg}")
+                    return False
+                
+                conn.commit()
+            
+            logger.info(f"‚úÖ Updated {field} for {date_msg} in database")
+            return True
+        except Exception as e:
+            logger.error(f"‚ùå Error updating value in database: {e}")
+            return False
 
-async def get_shifts_for_date(user_id, date):
-    if DATABASE_URL:
-        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        cur.execute("SELECT * FROM shifts WHERE user_id=%s AND date=%s", (user_id, date))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return rows
-    else:
-        async with aiosqlite.connect(SQLITE_PATH) as db:
-            cursor = await db.execute("SELECT * FROM shifts WHERE user_id=? AND date=?", (user_id, date))
-            return await cursor.fetchall()
+    async def get_profit(self, date_msg):
+        """Get profit from database"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT revenue, tips FROM shifts WHERE date = ?
+                ''', (date_msg,))
+                
+                result = cursor.fetchone()
+                if not result:
+                    return None
+                
+                revenue, tips = result
+                profit = (revenue or 0) + (tips or 0)
+                return str(profit)
+                
+        except Exception as e:
+            logger.error(f"‚ùå Error getting profit from database: {e}")
+            return None
 
+    async def check_shift_exists(self, date_msg):
+        """Check if shift exists"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT 1 FROM shifts WHERE date = ?
+                ''', (date_msg,))
+                
+                return cursor.fetchone() is not None
+                
+        except Exception as e:
+            logger.error(f"‚ùå Error checking shift existence: {e}")
+            return False
 
-async def update_shift_data(user_id, date, revenue, tips, hours):
-    if DATABASE_URL:
-        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE shifts
-            SET revenue=%s, tips=%s, hours=%s, filled=1
-            WHERE user_id=%s AND date=%s
-        """, (revenue, tips, hours, user_id, date))
-        conn.commit()
-        cur.close()
-        conn.close()
-    else:
-        async with aiosqlite.connect(SQLITE_PATH) as db:
-            await db.execute("""
-                UPDATE shifts
-                SET revenue=?, tips=?, hours=?, filled=1
-                WHERE user_id=? AND date=?""", (revenue, tips, hours, user_id, date))
-            await db.commit()
+    async def get_shifts_in_period(self, start_date, end_date):
+        """Get shifts for period"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT date, start_time, end_time, revenue, tips 
+                    FROM shifts 
+                    WHERE date BETWEEN ? AND ?
+                    ORDER BY date
+                ''', (start_date, end_date))
+                
+                shifts = []
+                for row in cursor.fetchall():
+                    shifts.append({
+                        'date': row[0],
+                        'start': row[1],
+                        'end': row[2],
+                        'revenue': row[3] or 0,
+                        'tips': row[4] or 0
+                    })
+                
+                return shifts
+        except Exception as e:
+            logger.error(f"‚ùå Error getting shifts in period: {e}")
+            return []
+
+    async def get_statistics(self, start_date, end_date):
+        """Get statistics for period"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT 
+                        COUNT(*) as shift_count,
+                        SUM(revenue) as total_revenue,
+                        SUM(tips) as total_tips,
+                        AVG(revenue) as avg_revenue,
+                        AVG(tips) as avg_tips
+                    FROM shifts 
+                    WHERE date BETWEEN ? AND ?
+                ''', (start_date, end_date))
+                
+                result = cursor.fetchone()
+                if not result or not result[0]:
+                    return None
+                
+                return {
+                    'shift_count': result[0],
+                    'total_revenue': result[1] or 0,
+                    'total_tips': result[2] or 0,
+                    'total_profit': (result[1] or 0) + (result[2] or 0),
+                    'avg_revenue': result[3] or 0,
+                    'avg_tips': result[4] or 0,
+                    'avg_profit': (result[3] or 0) + (result[4] or 0)
+                }
+        except Exception as e:
+            logger.error(f"‚ùå Error getting statistics: {e}")
+            return None
+
+# Global instance
+db_manager = DatabaseManager()
