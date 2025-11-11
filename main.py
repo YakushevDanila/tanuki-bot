@@ -34,32 +34,36 @@ async def sheets_get_profit(date_msg):
     logger.info(f"💰 Get profit (Sheets disabled): {date_msg}")
     return "4500"  # Заглушка для теста
 
-ALLOWED_USER_ID = 123456789  # Замени на реальный ID пользователя
-
+# ВРЕМЕННО ОТКЛЮЧАЕМ ПРОВЕРКУ ДОСТУПА
 def check_access(message: types.Message):
-    return message.from_user.id == ALLOWED_USER_ID
-
+    logger.info(f"🔓 Access granted for user: {message.from_user.id}")
+    return True  # Разрешить всем
 
 @dp.message(Command("start"))
 async def start_cmd(msg: types.Message):
     if not check_access(msg): return
     text = (
-        "Привет, Аня 🌸\n"
+        "Привет! 🌸\n"
         "Вот что я умею:\n"
         "/add_shift — добавить дату и время смены\n"
         "/revenue — ввести выручку за день\n"
         "/tips — добавить сумму чаевых 💰\n"
         "/edit — изменить данные\n"
         "/profit — узнать прибыль за день\n"
+        "/myid — показать мой ID\n"
         "/help — показать это сообщение"
     )
     await msg.answer(text)
 
+@dp.message(Command("myid"))
+async def show_my_id(msg: types.Message):
+    user_id = msg.from_user.id
+    first_name = msg.from_user.first_name or "Пользователь"
+    await msg.answer(f"👤 {first_name}, ваш ID: `{user_id}`", parse_mode="Markdown")
 
 @dp.message(Command("help"))
 async def help_cmd(msg: types.Message):
     await start_cmd(msg)
-
 
 @dp.message(Command("add_shift"))
 async def add_shift(msg: types.Message):
@@ -76,7 +80,6 @@ async def add_shift(msg: types.Message):
     await sheets_add_shift(date_msg, start, end)
     await msg.answer(f"Смена {date_msg} добавлена 🩷")
 
-
 @dp.message(Command("revenue"))
 async def revenue(msg: types.Message):
     if not check_access(msg): return
@@ -91,7 +94,6 @@ async def revenue(msg: types.Message):
     else:
         await msg.answer("Не удалось найти дату 😿")
 
-
 @dp.message(Command("tips"))
 async def tips(msg: types.Message):
     if not check_access(msg): return
@@ -105,7 +107,6 @@ async def tips(msg: types.Message):
         await msg.answer("Чаевые добавлены ☕️💖")
     else:
         await msg.answer("Не удалось найти указанную дату 😿")
-
 
 @dp.message(Command("edit"))
 async def edit_shift(msg: types.Message):
@@ -127,7 +128,6 @@ async def edit_shift(msg: types.Message):
         await msg.answer("Изменения сохранены 🩷")
     else:
         await msg.answer("Ошибка: дата не найдена ❌")
-
 
 @dp.message(Command("profit"))
 async def profit(msg: types.Message):
@@ -157,13 +157,11 @@ async def profit(msg: types.Message):
         text = f"Твоя прибыль за {date_msg}: {profit_value:.2f}₽.\nТы просто суперстар 🌟 — ещё немного, и миллион твой!"
     await msg.answer(text)
 
-
 @dp.message()
 async def echo(message: types.Message):
     """Обработка любых других сообщений"""
     if not check_access(message): return
     await message.answer(f"Эхо: {message.text}")
-
 
 async def main():
     try:
@@ -175,7 +173,6 @@ async def main():
         logger.error(f"💥 Bot crashed: {e}")
         import traceback
         traceback.print_exc()
-
 
 if __name__ == "__main__":
     print("🟢 Bot starting...")
