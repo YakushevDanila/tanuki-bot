@@ -1,10 +1,12 @@
-aiogram==3.3.0 --only-binary=all
-apscheduler==3.10.4 --only-binary=all
-gspread==6.2.1 --only-binary=all
-google-auth==2.41.1 --only-binary=all
-pytz==2023.3 --only-binary=all
-python-dotenv==1.0.0 --only-binary=all
-cachetools==6.2.1 --only-binary=all
-requests==2.32.5 --only-binary=all
+aiogram>=3.0
+sqlalchemy>=2.0
+gspread>=5.0
+google-api-python-client>=2.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=0.4.0
+apscheduler>=3.10
+python-dotenv>=1.0
+aiosqlite>=0.19.0
+pytz>=2023.0
 
 
