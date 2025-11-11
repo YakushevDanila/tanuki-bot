@@ -3,7 +3,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import asyncio
-from datetime import datetime, date as dt
+from datetime import datetime, date as dt, timedelta
 import logging
 import os
 
@@ -25,18 +25,10 @@ dp = Dispatcher()
 
 # Функция очистки ввода от временных меток
 def clean_user_input(text):
-    """
-    Очищает пользовательский ввод от временных меток и лишних данных
-    Возвращает только первую часть до пробела
-    """
     if not text:
         return ""
-    
-    # Разделяем по пробелам и берем первую часть
     parts = text.strip().split()
-    if parts:
-        return parts[0]
-    return ""
+    return parts[0] if parts else ""
 
 # FSM States
 class Form(StatesGroup):
@@ -52,102 +44,36 @@ class Form(StatesGroup):
     waiting_for_edit_value = State()
     waiting_for_profit_date = State()
     waiting_for_overwrite_confirm = State()
+    waiting_for_stats_start = State()
+    waiting_for_stats_end = State()
+    waiting_for_export_start = State()
+    waiting_for_export_end = State()
 
-# ВРЕМЕННОЕ ХРАНИЛИЩЕ ДАННЫХ (в памяти)
-temp_storage = {}
+# ВЫБОР ХРАНИЛИЩА
+storage_type = os.getenv('STORAGE_TYPE', 'sqlite').lower()
 
-# ЗАГЛУШКИ ДЛЯ GOOGLE SHEETS
-logger.info("🔧 Using stub functions - bot working without Google Sheets")
-
-async def add_shift(date_msg, start, end):
-    """Добавляет смену во временное хранилище"""
+if storage_type == 'google_sheets':
     try:
-        clean_date = clean_user_input(date_msg)
-        temp_storage[clean_date] = {
-            'start': clean_user_input(start),
-            'end': clean_user_input(end),
-            'revenue': '0',
-            'tips': '0'
-        }
-        logger.info(f"📅 [STUB] Shift added: {clean_date} {start}-{end}")
-        logger.info(f"📊 Current storage: {list(temp_storage.keys())}")
-        return True
+        from sheets import add_shift, update_value, get_profit, check_shift_exists
+        logger.info("✅ Using Google Sheets storage")
     except Exception as e:
-        logger.error(f"❌ Error in add_shift: {e}")
-        return False
+        logger.error(f"❌ Failed to use Google Sheets: {e}")
+        from database import db_manager as storage
+        add_shift = storage.add_shift
+        update_value = storage.update_value
+        get_profit = storage.get_profit
+        check_shift_exists = storage.check_shift_exists
+        logger.info("✅ Fallback to SQLite storage")
+else:
+    from database import db_manager as storage
+    add_shift = storage.add_shift
+    update_value = storage.update_value
+    get_profit = storage.get_profit
+    check_shift_exists = storage.check_shift_exists
+    logger.info("✅ Using SQLite storage")
 
-async def update_value(date_msg, field, value):
-    """Обновляет значение во временном хранилище"""
-    try:
-        clean_date = clean_user_input(date_msg)
-        logger.info(f"🔍 Looking for date: {clean_date} in storage: {list(temp_storage.keys())}")
-        
-        if clean_date not in temp_storage:
-            logger.warning(f"❌ Date not found: {clean_date}")
-            return False
-        
-        field_mapping = {
-            'выручка': 'revenue',
-            'чай': 'tips',
-            'начало': 'start', 
-            'конец': 'end'
-        }
-        
-        field_key = field_mapping.get(field.lower())
-        if not field_key:
-            logger.error(f"❌ Unknown field: {field}")
-            return False
-        
-        temp_storage[clean_date][field_key] = clean_user_input(value)
-        logger.info(f"📝 [STUB] Updated: {clean_date} {field} = {value}")
-        logger.info(f"📊 Current data for {clean_date}: {temp_storage[clean_date]}")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Error in update_value: {e}")
-        return False
-
-async def get_profit(date_msg):
-    """Рассчитывает прибыль из временного хранилища"""
-    try:
-        clean_date = clean_user_input(date_msg)
-        logger.info(f"🔍 Looking for profit data for: {clean_date} in {list(temp_storage.keys())}")
-        
-        if clean_date not in temp_storage:
-            logger.warning(f"❌ Date not found for profit: {clean_date}")
-            return None
-        
-        data = temp_storage[clean_date]
-        revenue_str = data.get('revenue', '0').replace(',', '.')
-        tips_str = data.get('tips', '0').replace(',', '.')
-        
-        logger.info(f"💰 Raw data - revenue: '{revenue_str}', tips: '{tips_str}'")
-        
-        # Преобразуем в числа
-        try:
-            revenue = float(revenue_str) if revenue_str else 0
-            tips = float(tips_str) if tips_str else 0
-        except ValueError as e:
-            logger.error(f"❌ Number conversion error: {e}")
-            revenue = 0
-            tips = 0
-        
-        profit = revenue + tips
-        logger.info(f"✅ Calculated profit: {profit}")
-        return str(profit)
-    except Exception as e:
-        logger.error(f"❌ Error in get_profit: {e}")
-        return "0"
-
-async def check_shift_exists(date_msg):
-    """Проверяет существование смены во временном хранилище"""
-    try:
-        clean_date = clean_user_input(date_msg)
-        exists = clean_date in temp_storage
-        logger.info(f"🔍 Check shift exists {clean_date}: {exists}")
-        return exists
-    except Exception as e:
-        logger.error(f"❌ Error in check_shift_exists: {e}")
-        return False
+# Импортируем функции для статистики и экспорта
+from database import db_manager
 
 # ВРЕМЕННО ОТКЛЮЧАЕМ ПРОВЕРКУ ДОСТУПА
 def check_access(message: types.Message):
@@ -157,6 +83,7 @@ def check_access(message: types.Message):
 @dp.message(Command("start"))
 async def start_cmd(msg: types.Message):
     if not check_access(msg): return
+    storage_info = "Google Sheets" if storage_type == "google_sheets" else "SQLite"
     text = (
         "Привет! 🌸\n"
         "Вот что я умею:\n"
@@ -165,10 +92,11 @@ async def start_cmd(msg: types.Message):
         "/tips — добавить сумму чаевых 💰\n"
         "/edit — изменить данные\n"
         "/profit — узнать прибыль за день\n"
+        "/stats — статистика за период\n"
+        "/export — экспорт данных за период\n"
         "/myid — показать мой ID\n"
         "/help — показать это сообщение\n"
-        "\n"
-        "⚠️ Режим тестирования: данные сохраняются в памяти"
+        f"\n💾 Хранилище: {storage_info}"
     )
     await msg.answer(text)
 
@@ -454,6 +382,141 @@ async def process_profit_date(msg: types.Message, state: FSMContext):
     await msg.answer(text)
     await state.clear()
 
+# STATS FLOW
+@dp.message(Command("stats"))
+async def stats_start(msg: types.Message, state: FSMContext):
+    if not check_access(msg): return
+    
+    if storage_type == 'google_sheets':
+        await msg.answer("❌ Статистика временно недоступна при использовании Google Sheets. Используй SQLite хранилище.")
+        return
+        
+    await msg.answer("Введи начальную дату для статистики (ДД.ММ.ГГГГ):")
+    await state.set_state(Form.waiting_for_stats_start)
+
+@dp.message(Form.waiting_for_stats_start)
+async def process_stats_start(msg: types.Message, state: FSMContext):
+    clean_date = clean_user_input(msg.text)
+    
+    try:
+        datetime.strptime(clean_date, "%d.%m.%Y").date()
+        await state.update_data(stats_start=clean_date)
+        await msg.answer("Введи конечную дату (ДД.ММ.ГГГГ):")
+        await state.set_state(Form.waiting_for_stats_end)
+    except ValueError:
+        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ")
+        await state.clear()
+
+@dp.message(Form.waiting_for_stats_end)
+async def process_stats_end(msg: types.Message, state: FSMContext):
+    clean_date = clean_user_input(msg.text)
+    
+    try:
+        datetime.strptime(clean_date, "%d.%m.%Y").date()
+        user_data = await state.get_data()
+        start_date = user_data['stats_start']
+        end_date = clean_date
+        
+        stats = await db_manager.get_statistics(start_date, end_date)
+        
+        if not stats:
+            await msg.answer("❌ Нет данных за указанный период")
+            await state.clear()
+            return
+        
+        # Форматируем статистику
+        text = f"📊 Статистика за период {start_date} - {end_date}:\n\n"
+        text += f"• Количество смен: {stats['shift_count']}\n"
+        text += f"• Общая выручка: {stats['total_revenue']:.2f}₽\n"
+        text += f"• Общие чаевые: {stats['total_tips']:.2f}₽\n"
+        text += f"• Общая прибыль: {stats['total_profit']:.2f}₽\n"
+        text += f"• Средняя выручка за смену: {stats['avg_revenue']:.2f}₽\n"
+        text += f"• Средние чаевые за смену: {stats['avg_tips']:.2f}₽\n"
+        text += f"• Средняя прибыль за смену: {stats['avg_profit']:.2f}₽"
+        
+        await msg.answer(text)
+        
+    except ValueError:
+        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ")
+    
+    await state.clear()
+
+# EXPORT FLOW
+@dp.message(Command("export"))
+async def export_start(msg: types.Message, state: FSMContext):
+    if not check_access(msg): return
+    
+    if storage_type == 'google_sheets':
+        await msg.answer("❌ Экспорт временно недоступен при использовании Google Sheets. Используй SQLite хранилище.")
+        return
+        
+    await msg.answer("Введи начальную дату для экспорта (ДД.ММ.ГГГГ):")
+    await state.set_state(Form.waiting_for_export_start)
+
+@dp.message(Form.waiting_for_export_start)
+async def process_export_start(msg: types.Message, state: FSMContext):
+    clean_date = clean_user_input(msg.text)
+    
+    try:
+        datetime.strptime(clean_date, "%d.%m.%Y").date()
+        await state.update_data(export_start=clean_date)
+        await msg.answer("Введи конечную дату (ДД.ММ.ГГГГ):")
+        await state.set_state(Form.waiting_for_export_end)
+    except ValueError:
+        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ")
+        await state.clear()
+
+@dp.message(Form.waiting_for_export_end)
+async def process_export_end(msg: types.Message, state: FSMContext):
+    clean_date = clean_user_input(msg.text)
+    
+    try:
+        datetime.strptime(clean_date, "%d.%m.%Y").date()
+        user_data = await state.get_data()
+        start_date = user_data['export_start']
+        end_date = clean_date
+        
+        shifts = await db_manager.get_shifts_in_period(start_date, end_date)
+        
+        if not shifts:
+            await msg.answer("❌ Нет данных за указанный период")
+            await state.clear()
+            return
+        
+        # Формируем экспорт
+        export_text = f"Экспорт данных за период {start_date} - {end_date}\n\n"
+        
+        total_revenue = 0
+        total_tips = 0
+        
+        for shift in shifts:
+            export_text += f"📅 {shift['date']} ({shift['start']}-{shift['end']})\n"
+            export_text += f"   Выручка: {shift['revenue']:.2f}₽\n"
+            export_text += f"   Чаевые: {shift['tips']:.2f}₽\n"
+            export_text += f"   Прибыль: {(shift['revenue'] + shift['tips']):.2f}₽\n\n"
+            
+            total_revenue += shift['revenue']
+            total_tips += shift['tips']
+        
+        export_text += f"ИТОГО:\n"
+        export_text += f"Выручка: {total_revenue:.2f}₽\n"
+        export_text += f"Чаевые: {total_tips:.2f}₽\n"
+        export_text += f"Общая прибыль: {total_revenue + total_tips:.2f}₽"
+        
+        # Разбиваем на части если сообщение слишком длинное
+        if len(export_text) > 4000:
+            parts = [export_text[i:i+4000] for i in range(0, len(export_text), 4000)]
+            for part in parts:
+                await msg.answer(part)
+                await asyncio.sleep(0.5)
+        else:
+            await msg.answer(export_text)
+        
+    except ValueError:
+        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ")
+    
+    await state.clear()
+
 @dp.message()
 async def echo(message: types.Message):
     """Обработка любых других сообщений"""
@@ -462,7 +525,7 @@ async def echo(message: types.Message):
 
 async def main():
     try:
-        logger.info("🚀 Starting bot with temporary storage...")
+        logger.info("🚀 Starting bot with enhanced features...")
         
         # УДАЛЯЕМ ВЕБХУК ПЕРЕД ЗАПУСКОМ POLLING
         logger.info("🗑️ Deleting webhook...")
@@ -478,5 +541,5 @@ async def main():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    print("🟢 Bot starting with temporary storage...")
+    print("🟢 Bot starting with enhanced features...")
     asyncio.run(main())
