@@ -1,2 +1,15 @@
 BOT_TOKEN=8578564440:AAGxiRoCIvp8XNbxRQqTuFCWKMzB0OtY9X0
-STORAGE_TYPE=sqlite
+GOOGLE_CREDENTIALS={
+  "type": "service_account",
+  "project_id": "fit-freehold-477912-g3",
+  "private_key_id": "370196c73ab724b1fb9b6f79c0b57e5450976089",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCrbtL3ARCK5pBL\nKAG+Hw4zyBV1qwjLRrwgsO3OMuS0SQP50qX6zf8uY6NiHRKEZiiU+/od1iIMyR6I\niBVKsRZaoNu2/+knAVfSFvrVP4IZnUgIl82SQOcbwJbp6dslI12omrSmLGhGvvw7\nJcROB+pq0fKyAKTVvh+07dniy7uTdGN28skbx0rpb7Rj8xSQsgel+HumnPij2qB9\nd8XGeC56W7KgENTq3xPUVxeUPrpskhPIbAYAdWYEvplyVdJJImcojQ52coxwB5l0\ncaEimuE+gd7TTyuVWBJEYcbS0igzadNfAhZI8RtEmCsPrLyDnss4PuyIgjHR+WXe\nAjiOtsLbAgMBAAECggEAPmB2tpVWlZPLEO2fpLPcEQ9Ob6Ap9Pzp2uNFw+9UtByV\nK8NvzVBC93gdrMdzQ2WAgqUkntKZVRmg2IDbbm/8+EDrcSywgxbEA5eE8S7IgdVu\nrmG91Od0r+5levsyV9MEcyLHdGdYEdXQJR1aziGnM/LsYcRGNdeV5dldnF4RBFeO\nl5+EeR26BLzKAjVagOoDS/v1fNUXCjn5qVykEK6mF0CpPorZGM2P9KTBjal/xu+G\ncX6eCBf9A/NYfUWJFBjzUXLfSXa9mAD3o9iIJGqbcX4hzJkpVB+/s6Yq+/H5hOKn\nQbYIM6B+gOjy7HYQYFgdTADo+hWe/INRdCZL5Ku88QKBgQDVPGlsNDtDlfCxkds+\nFf//43K0bbBVTZY6lOgqTSsq5lF9OD8BDNn+TeTR4h0I6OEFwo7Wi/+Bf9MBi5+Y\nDk+KZ/3uGaKfnbflevT2VSPjDCjHGuuyIzFpj1ppBeAzkeJoM8Ss9l9TEVqxyWVq\n4fA5OSn3aTFgmTgG1PKm31egvQKBgQDN0Dtg+ikI3fnh1JGzPgi096DsYV6mpp9k\n0g5WACc3bpuQCyu7IuRgHRR7/eRQRGF9UXPPbbJoZTmdWScN6tfvjnyGSEOZnO2a\n+TS9NvG+qZ/j95FWZClowE1w+RnVS58JCsMBbXGd7hDsR7TgfvU2zq8LjIhk/AKk\nzPzCivtndwKBgFMfII1QcwWujkv56nfyRX+vXwhcdc9a1kPxxeqveDNZ4swoP88d\n/mA2Zws11FGjzgvbwqh5nFkTxeIlVkoE0hbG4OKO1ajY51WqL5FSsRGRrNeoc9ZW\nB635dqnX44TWymYKQBGYXKJZ8nu5YTJf7q+vy98o/1mDgKaRHiHUkCkVAoGAA99E\nDroGJZ2Pgvkt2JJ1NXpnM6tNTZNa8lmlXWbZVgilspsTMo0ggNJrPT30mrH+p43t\nwNxOe/pTkCtKOc/OSjqDCz+2zeAO9Fh17o1nFPA6Ct7whBCUWt0rV9HH86RdlJz4\nOEGn3pHJDbj3pTWeRW60CmKVeljnb9RPeRWGT1cCgYA4rktlTLSVCZ4lHMB8Vc9x\naT1gWKDF8P34cYkhpdxZpnp4pBcOjvC/Y7IQzI384N18ZZq3HJsGHqBLPmVMW/9j\n5PpVtWQTwTK2jizLiJ+TJN5R6Le0Z6sA5779TPZBPNDv18PljzbWvuVOwfgfNTyi\nLpXggMMdRhJBzlMmYt1hQA==\n-----END PRIVATE KEY-----\n",
+  "client_email": "id-schedulebot@fit-freehold-477912-g3.iam.gserviceaccount.com",
+  "client_id": "102765819733752461108",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/id-schedulebot%40fit-freehold-477912-g3.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
+STORAGE_TYPE=google_sheets
