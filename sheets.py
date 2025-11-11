@@ -13,23 +13,21 @@ _sheet = None
 def get_sheets_client():
     """Initialize Google Sheets client using environment variables"""
     try:
-        # Method 1: Use GOOGLE_SHEETS_CREDENTIALS environment variable
+        # ТОЛЬКО переменные окружения - убираем fallback на файл
         creds_json = os.environ.get('GOOGLE_SHEETS_CREDENTIALS')
-        if creds_json:
-            print("Using environment variable for credentials")
-            creds_dict = json.loads(creds_json)
-            creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        else:
-            # Method 2: Fallback to credentials file (for local development)
-            print("Trying to use credentials file...")
-            from config import CREDENTIALS_FILE
-            creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+        if not creds_json:
+            print("❌ GOOGLE_SHEETS_CREDENTIALS not found in environment")
+            return None
+            
+        print("✅ Using environment variable for credentials")
+        creds_dict = json.loads(creds_json)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
         
         client = gspread.authorize(creds)
-        print("Google Sheets client authorized successfully")
+        print("✅ Google Sheets client authorized successfully")
         return client
     except Exception as e:
-        print(f"Error initializing Google Sheets client: {e}")
+        print(f"❌ Error initializing Google Sheets client: {e}")
         return None
 
 def get_sheet():
@@ -41,24 +39,20 @@ def get_sheet():
     try:
         SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID')
         if not SPREADSHEET_ID:
-            from config import SPREADSHEET_ID
-        
-        if not SPREADSHEET_ID or SPREADSHEET_ID == 'your_spreadsheet_id_here':
-            print("SPREADSHEET_ID not configured")
+            print("❌ SPREADSHEET_ID not found in environment")
             return None
         
         client = get_sheets_client()
         if not client:
-            print("Failed to get sheets client")
             return None
             
-        print(f"Opening spreadsheet with ID: {SPREADSHEET_ID}")
+        print(f"✅ Opening spreadsheet with ID: {SPREADSHEET_ID}")
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
         _sheet = spreadsheet.sheet1
-        print("Sheet accessed successfully")
+        print("✅ Sheet accessed successfully")
         return _sheet
     except Exception as e:
-        print(f"Error accessing spreadsheet: {e}")
+        print(f"❌ Error accessing spreadsheet: {e}")
         return None
 
 def ensure_sheet():
@@ -141,67 +135,4 @@ def recalc_row(date):
         profit = calculate_profit(tips, hours, revenue)
 
         # Update cells
-        if "часы" in cols:
-            sheet.update_cell(row_num, cols["часы"], hours)
-        if "прибыль" in cols:
-            sheet.update_cell(row_num, cols["прибыль"], profit)
-            
-    except Exception as e:
-        print(f"Error recalculating row: {e}")
-
-def add_shift(date, start, end):
-    """Add new shift to the sheet"""
-    sheet = get_sheet()
-    if not sheet:
-        print("Sheet not available in add_shift")
-        return False
-        
-    try:
-        row = [date, start, end, "", "", "", "", "", ""]
-        sheet.append_row(row)
-        recalc_row(date)
-        return True
-    except Exception as e:
-        print(f"Error adding shift: {e}")
-        return False
-
-def update_value(date, field, value):
-    """Update specific field for a date"""
-    sheet = get_sheet()
-    if not sheet:
-        return False
-        
-    try:
-        headers = sheet.row_values(1)
-        if field not in headers:
-            return False
-        
-        col = headers.index(field) + 1
-        row_num = find_row_by_date(date)
-        
-        if not row_num:
-            return False
-        
-        sheet.update_cell(row_num, col, value)
-        recalc_row(date)
-        return True
-    except Exception as e:
-        print(f"Error updating value: {e}")
-        return False
-
-def has_shift_today(today_str):
-    """Check if shift exists for today"""
-    sheet = get_sheet()
-    if not sheet:
-        return False
-        
-    try:
-        data = sheet.col_values(1)
-        return today_str in [d.strip() for d in data]
-    except Exception:
-        return False
-
-# Remove the immediate initialization
-# sheet = get_sheet()  # This line was causing the error
-
-print("Sheets module loaded (lazy initialization)")
+       
