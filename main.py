@@ -1,15 +1,40 @@
-﻿from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 import asyncio
 from datetime import datetime, date as dt
+import logging
+import os
 
-from config import BOT_TOKEN, ALLOWED_USER_ID
-import sheets
-from scheduler import setup_scheduler
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Получаем токен из переменных окружения
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+if not BOT_TOKEN:
+    logger.error("❌ BOT_TOKEN not found in environment!")
+    exit(1)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Временные заглушки для Google Sheets
+async def sheets_add_shift(date_msg, start, end):
+    logger.info(f"📅 Shift added (Sheets disabled): {date_msg} {start}-{end}")
+    return True
+
+async def sheets_update_value(date_msg, field, value):
+    logger.info(f"📝 Updated (Sheets disabled): {date_msg} {field} = {value}")
+    return True
+
+async def sheets_get_profit(date_msg):
+    logger.info(f"💰 Get profit (Sheets disabled): {date_msg}")
+    return "4500"  # Заглушка для теста
+
+ALLOWED_USER_ID = 123456789  # Замени на реальный ID пользователя
 
 def check_access(message: types.Message):
     return message.from_user.id == ALLOWED_USER_ID
@@ -42,7 +67,7 @@ async def add_shift(msg: types.Message):
     await msg.answer("Теперь время окончания (чч:мм):")
     end = (await bot.wait_for("message")).text.strip()
 
-    sheets.add_shift(date_msg, start, end)
+    await sheets_add_shift(date_msg, start, end)
     await msg.answer(f"Смена {date_msg} добавлена 🩷")
 
 
@@ -55,7 +80,7 @@ async def revenue(msg: types.Message):
     await msg.answer("Введи сумму выручки (только число):")
     rev = (await bot.wait_for("message")).text.strip()
 
-    if sheets.update_value(date_msg, "выручка", rev):
+    if await sheets_update_value(date_msg, "выручка", rev):
         await msg.answer("Выручка обновлена 💰✨")
     else:
         await msg.answer("Не удалось найти дату 😿")
@@ -68,9 +93,9 @@ async def tips(msg: types.Message):
     date_msg = (await bot.wait_for("message")).text.strip()
 
     await msg.answer("Введи сумму чаевых (число):")
-    tips = (await bot.wait_for("message")).text.strip()
+    tips_amount = (await bot.wait_for("message")).text.strip()
 
-    if sheets.update_value(date_msg, "чай", tips):
+    if await sheets_update_value(date_msg, "чай", tips_amount):
         await msg.answer("Чаевые добавлены ☕️💖")
     else:
         await msg.answer("Не удалось найти указанную дату 😿")
@@ -92,7 +117,7 @@ async def edit_shift(msg: types.Message):
     await msg.answer(f"Введи новое значение для {field}:")
     value = (await bot.wait_for("message")).text.strip()
 
-    if sheets.update_value(date_msg, field, value):
+    if await sheets_update_value(date_msg, field, value):
         await msg.answer("Изменения сохранены 🩷")
     else:
         await msg.answer("Ошибка: дата не найдена ❌")
@@ -112,25 +137,42 @@ async def profit(msg: types.Message):
         await msg.answer("Неверный формат даты ❌")
         return
 
-    profit = sheets.get_profit(date_msg)
-    if not profit:
+    profit_value = await sheets_get_profit(date_msg)
+    if not profit_value:
         await msg.answer("Нет данных о прибыли на эту дату 😿")
         return
 
-    profit = float(profit.replace(",", "."))
-    if profit < 4000:
-        text = f"Твоя прибыль за {date_msg}: {profit:.2f}₽.\nНе расстраивайся, котик 🐾 — ты отлично поработала!"
-    elif 4000 <= profit <= 6000:
-        text = f"Твоя прибыль за {date_msg}: {profit:.2f}₽.\nНеплохая смена 😺 — беги радовать себя чем-то вкусным!"
+    profit_value = float(profit_value.replace(",", "."))
+    if profit_value < 4000:
+        text = f"Твоя прибыль за {date_msg}: {profit_value:.2f}₽.\nНе расстраивайся, котик 🐾 — ты отлично поработала!"
+    elif 4000 <= profit_value <= 6000:
+        text = f"Твоя прибыль за {date_msg}: {profit_value:.2f}₽.\nНеплохая смена 😺 — беги радовать себя чем-то вкусным!"
     else:
-        text = f"Твоя прибыль за {date_msg}: {profit:.2f}₽.\nТы просто суперстар 🌟 — ещё немного, и миллион твой!"
+        text = f"Твоя прибыль за {date_msg}: {profit_value:.2f}₽.\nТы просто суперстар 🌟 — ещё немного, и миллион твой!"
     await msg.answer(text)
 
 
+@dp.message(Command("start"))
+async def start_cmd(msg: types.Message):
+    await msg.answer("🤖 Бот запущен! Используй /привет для списка команд.")
+
+
 async def main():
-    setup_scheduler(bot)
-    await dp.start_polling(bot)
+    try:
+        logger.info("🚀 Starting bot...")
+        
+        # Временно отключаем scheduler чтобы избежать ошибок
+        # setup_scheduler(bot)
+        
+        logger.info("✅ Starting polling...")
+        await dp.start_polling(bot)
+        
+    except Exception as e:
+        logger.error(f"💥 Bot crashed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
+    print("🟢 Bot starting...")
     asyncio.run(main())
