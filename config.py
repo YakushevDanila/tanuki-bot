@@ -4,3 +4,4 @@ CREDENTIALS_FILE = "credentials.json"
 ALLOWED_USER_ID = 462439834  # Telegram ID Àííû
 
 TIMEZONE = "Europe/Moscow"
+
