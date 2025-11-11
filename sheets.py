@@ -1,209 +1,216 @@
-import sqlite3
+import gspread
+from gspread import Worksheet
+from gspread.utils import ValueInputOption
 import logging
 from datetime import datetime
-import json
 import os
+import asyncio
+import json
 
 logger = logging.getLogger(__name__)
 
-class DatabaseManager:
-    def __init__(self, db_path='shifts.db'):
-        self.db_path = db_path
-        self._init_db()
+class GoogleSheetsManager:
+    def __init__(self):
+        self.client = None
+        self.spreadsheet = None
+        self.worksheet = None
+        self.initialized = False
+        self._initialize()
 
-    def _init_db(self):
-        """Инициализация базы данных"""
+    def _initialize(self):
+        """Initialize Google Sheets connection"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS shifts (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        date TEXT UNIQUE NOT NULL,
-                        start_time TEXT NOT NULL,
-                        end_time TEXT NOT NULL,
-                        revenue REAL DEFAULT 0,
-                        tips REAL DEFAULT 0,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                
-                # Создаем индекс для быстрого поиска по дате
-                cursor.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_date ON shifts(date)
-                ''')
-                
-                conn.commit()
-            logger.info("✅ SQLite database initialized")
-        except Exception as e:
-            logger.error(f"❌ Database initialization error: {e}")
+            # Get environment variables
+            google_credentials = os.getenv('GOOGLE_CREDENTIALS')
+            sheet_id = os.getenv('SHEET_ID')
+            
+            if not google_credentials or not sheet_id:
+                logger.error("❌ GOOGLE_CREDENTIALS or SHEET_ID not found in environment")
+                return
 
-    def _get_connection(self):
-        """Получает соединение с базой данных"""
-        return sqlite3.connect(self.db_path)
+            # Parse JSON credentials
+            creds_dict = json.loads(google_credentials)
+            
+            # Initialize client
+            from google.oauth2.service_account import Credentials
+            scopes = ['https://www.googleapis.com/auth/spreadsheets']
+            credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            
+            self.client = gspread.authorize(credentials)
+            self.spreadsheet = self.client.open_by_key(sheet_id)
+            
+            # Try to find worksheet
+            try:
+                self.worksheet = self.spreadsheet.worksheet('Смены')
+            except gspread.WorksheetNotFound:
+                # Create new worksheet if doesn't exist
+                self.worksheet = self.spreadsheet.add_worksheet(title='Смены', rows=1000, cols=10)
+                # Add headers
+                self.worksheet.update('A1:E1', [['Дата', 'Начало', 'Конец', 'Выручка', 'Чаевые']])
+            
+            self.initialized = True
+            logger.info("✅ Google Sheets initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Google Sheets: {e}")
+            self.initialized = False
 
     async def add_shift(self, date_msg, start, end):
-        """Добавляет смену в базу данных"""
+        """Add shift to spreadsheet"""
+        if not self.initialized:
+            logger.error("Google Sheets not initialized")
+            return False
+
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT OR REPLACE INTO shifts (date, start_time, end_time, updated_at)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (date_msg, start, end))
-                conn.commit()
+            # Validate date
+            date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
+            formatted_date = date_obj.strftime("%d.%m.%Y")
             
-            logger.info(f"✅ Shift added to database: {date_msg}")
-            return True
+            # Validate time
+            datetime.strptime(start, "%H:%M")
+            datetime.strptime(end, "%H:%M")
+            
+            # Find existing record
+            try:
+                cell = await asyncio.to_thread(self.worksheet.find, formatted_date)
+                if cell:
+                    # Update existing record
+                    row = cell.row
+                    await asyncio.to_thread(
+                        self.worksheet.update,
+                        f'B{row}:C{row}',
+                        [[start, end]],
+                        value_input_option=ValueInputOption.user_entered
+                    )
+                    logger.info(f"📝 Updated existing shift: {formatted_date}")
+                else:
+                    # Add new record
+                    new_row = [formatted_date, start, end, '', '']
+                    await asyncio.to_thread(
+                        self.worksheet.append_row,
+                        new_row,
+                        value_input_option=ValueInputOption.user_entered
+                    )
+                    logger.info(f"✅ Added new shift: {formatted_date}")
+                
+                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Error in sheet operation: {e}")
+                return False
+                
+        except ValueError as e:
+            logger.error(f"❌ Invalid date/time format: {e}")
+            return False
         except Exception as e:
-            logger.error(f"❌ Error adding shift to database: {e}")
+            logger.error(f"❌ Error adding shift: {e}")
             return False
 
     async def update_value(self, date_msg, field, value):
-        """Обновляет значение в базе данных"""
+        """Update value in spreadsheet"""
+        if not self.initialized:
+            logger.error("Google Sheets not initialized")
+            return False
+
         try:
-            field_mapping = {
-                'начало': 'start_time',
-                'конец': 'end_time',
-                'выручка': 'revenue',
-                'чай': 'tips'
-            }
+            date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
+            formatted_date = date_obj.strftime("%d.%m.%Y")
             
-            db_field = field_mapping.get(field.lower())
-            if not db_field:
-                logger.error(f"❌ Unknown field: {field}")
+            # Find date
+            cell = await asyncio.to_thread(self.worksheet.find, formatted_date)
+            if not cell:
+                logger.warning(f"Date not found: {formatted_date}")
                 return False
 
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                
-                if db_field in ['revenue', 'tips']:
-                    # Для числовых полей
-                    try:
-                        numeric_value = float(value)
-                    except ValueError:
-                        logger.error(f"❌ Invalid numeric value: {value}")
-                        return False
-                    
-                    cursor.execute(f'''
-                        UPDATE shifts SET {db_field} = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE date = ?
-                    ''', (numeric_value, date_msg))
-                else:
-                    # Для текстовых полей
-                    cursor.execute(f'''
-                        UPDATE shifts SET {db_field} = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE date = ?
-                    ''', (value, date_msg))
-                
-                if cursor.rowcount == 0:
-                    logger.warning(f"❌ No shift found for date: {date_msg}")
-                    return False
-                
-                conn.commit()
+            row = cell.row
+            column_mapping = {
+                'начало': 'B',
+                'конец': 'C', 
+                'выручка': 'D',
+                'чай': 'E'
+            }
             
-            logger.info(f"✅ Updated {field} for {date_msg} in database")
+            column = column_mapping.get(field.lower())
+            if not column:
+                logger.error(f"Unknown field: {field}")
+                return False
+
+            await asyncio.to_thread(
+                self.worksheet.update,
+                f'{column}{row}',
+                [[value]],
+                value_input_option=ValueInputOption.user_entered
+            )
+            
+            logger.info(f"✅ Updated {field} for {formatted_date}")
             return True
+            
         except Exception as e:
-            logger.error(f"❌ Error updating value in database: {e}")
+            logger.error(f"❌ Error updating value: {e}")
             return False
 
     async def get_profit(self, date_msg):
-        """Получает прибыль из базы данных"""
+        """Get profit for date"""
+        if not self.initialized:
+            logger.error("Google Sheets not initialized")
+            return None
+
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT revenue, tips FROM shifts WHERE date = ?
-                ''', (date_msg,))
-                
-                result = cursor.fetchone()
-                if not result:
-                    return None
-                
-                revenue, tips = result
-                profit = (revenue or 0) + (tips or 0)
+            date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
+            formatted_date = date_obj.strftime("%d.%m.%Y")
+            
+            cell = await asyncio.to_thread(self.worksheet.find, formatted_date)
+            if not cell:
+                return None
+
+            row = cell.row
+            
+            # Get values
+            revenue_cell = await asyncio.to_thread(self.worksheet.cell, row, 4)
+            tips_cell = await asyncio.to_thread(self.worksheet.cell, row, 5)
+            
+            revenue = revenue_cell.value if revenue_cell.value else "0"
+            tips = tips_cell.value if tips_cell.value else "0"
+            
+            try:
+                profit = float(str(revenue).replace(',', '.')) + float(str(tips).replace(',', '.'))
                 return str(profit)
+            except ValueError:
+                return "0"
                 
         except Exception as e:
-            logger.error(f"❌ Error getting profit from database: {e}")
+            logger.error(f"❌ Error getting profit: {e}")
             return None
 
     async def check_shift_exists(self, date_msg):
-        """Проверяет существование смены"""
+        """Check if shift exists"""
+        if not self.initialized:
+            logger.error("Google Sheets not initialized")
+            return False
+
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT 1 FROM shifts WHERE date = ?
-                ''', (date_msg,))
-                
-                return cursor.fetchone() is not None
-                
+            date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
+            formatted_date = date_obj.strftime("%d.%m.%Y")
+            
+            cell = await asyncio.to_thread(self.worksheet.find, formatted_date)
+            return cell is not None
+            
         except Exception as e:
             logger.error(f"❌ Error checking shift existence: {e}")
             return False
 
-    async def get_shifts_in_period(self, start_date, end_date):
-        """Получает смены за период"""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT date, start_time, end_time, revenue, tips 
-                    FROM shifts 
-                    WHERE date BETWEEN ? AND ?
-                    ORDER BY date
-                ''', (start_date, end_date))
-                
-                shifts = []
-                for row in cursor.fetchall():
-                    shifts.append({
-                        'date': row[0],
-                        'start': row[1],
-                        'end': row[2],
-                        'revenue': row[3] or 0,
-                        'tips': row[4] or 0
-                    })
-                
-                return shifts
-        except Exception as e:
-            logger.error(f"❌ Error getting shifts in period: {e}")
-            return []
+# Global instance
+sheets_manager = GoogleSheetsManager()
 
-    async def get_statistics(self, start_date, end_date):
-        """Получает статистику за период"""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT 
-                        COUNT(*) as shift_count,
-                        SUM(revenue) as total_revenue,
-                        SUM(tips) as total_tips,
-                        AVG(revenue) as avg_revenue,
-                        AVG(tips) as avg_tips
-                    FROM shifts 
-                    WHERE date BETWEEN ? AND ?
-                ''', (start_date, end_date))
-                
-                result = cursor.fetchone()
-                if not result or not result[0]:
-                    return None
-                
-                return {
-                    'shift_count': result[0],
-                    'total_revenue': result[1] or 0,
-                    'total_tips': result[2] or 0,
-                    'total_profit': (result[1] or 0) + (result[2] or 0),
-                    'avg_revenue': result[3] or 0,
-                    'avg_tips': result[4] or 0,
-                    'avg_profit': (result[3] or 0) + (result[4] or 0)
-                }
-        except Exception as e:
-            logger.error(f"❌ Error getting statistics: {e}")
-            return None
+# Functions for backward compatibility
+async def add_shift(date_msg, start, end):
+    return await sheets_manager.add_shift(date_msg, start, end)
 
-# Глобальный экземпляр
-db_manager = DatabaseManager()
+async def update_value(date_msg, field, value):
+    return await sheets_manager.update_value(date_msg, field, value)
+
+async def get_profit(date_msg):
+    return await sheets_manager.get_profit(date_msg)
+
+async def check_shift_exists(date_msg):
+    return await sheets_manager.check_shift_exists(date_msg)
