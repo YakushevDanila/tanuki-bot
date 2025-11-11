@@ -1,7 +1,2 @@
-# Обязательные переменные
 BOT_TOKEN=8578564440:AAGxiRoCIvp8XNbxRQqTuFCWKMzB0OtY9X0
 STORAGE_TYPE=sqlite
-
-# Опционально для Google Sheets (если нужно)
-SHEET_ID=1mHC7Wdp8Xwpq4taZ8RE6PXiePUISW7eUDworN_Daf3g
-# GOOGLE_CREDENTIALS={"type": "service_account", "project_id": "...", ...}
