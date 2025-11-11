@@ -40,22 +40,28 @@ def check_access(message: types.Message):
     return message.from_user.id == ALLOWED_USER_ID
 
 
-@dp.message(Command("привет"))
-async def greet(msg: types.Message):
+@dp.message(Command("start"))
+async def start_cmd(msg: types.Message):
     if not check_access(msg): return
     text = (
         "Привет, Аня 🌸\n"
         "Вот что я умею:\n"
-        "/добавить_смену — добавить дату и время смены\n"
-        "/выручка — ввести выручку за день\n"
-        "/чай — добавить сумму чаевых 💰\n"
-        "/редактировать_график — изменить данные\n"
-        "/прибыль — узнать прибыль за день"
+        "/add_shift — добавить дату и время смены\n"
+        "/revenue — ввести выручку за день\n"
+        "/tips — добавить сумму чаевых 💰\n"
+        "/edit — изменить данные\n"
+        "/profit — узнать прибыль за день\n"
+        "/help — показать это сообщение"
     )
     await msg.answer(text)
 
 
-@dp.message(Command("добавить_смену"))
+@dp.message(Command("help"))
+async def help_cmd(msg: types.Message):
+    await start_cmd(msg)
+
+
+@dp.message(Command("add_shift"))
 async def add_shift(msg: types.Message):
     if not check_access(msg): return
     await msg.answer("Введи дату смены (ДД.ММ.ГГГГ):")
@@ -71,7 +77,7 @@ async def add_shift(msg: types.Message):
     await msg.answer(f"Смена {date_msg} добавлена 🩷")
 
 
-@dp.message(Command("выручка"))
+@dp.message(Command("revenue"))
 async def revenue(msg: types.Message):
     if not check_access(msg): return
     await msg.answer("Введи дату (ДД.ММ.ГГГГ):")
@@ -86,7 +92,7 @@ async def revenue(msg: types.Message):
         await msg.answer("Не удалось найти дату 😿")
 
 
-@dp.message(Command("чай"))
+@dp.message(Command("tips"))
 async def tips(msg: types.Message):
     if not check_access(msg): return
     await msg.answer("Введи дату (ДД.ММ.ГГГГ):")
@@ -101,7 +107,7 @@ async def tips(msg: types.Message):
         await msg.answer("Не удалось найти указанную дату 😿")
 
 
-@dp.message(Command("редактировать_график"))
+@dp.message(Command("edit"))
 async def edit_shift(msg: types.Message):
     if not check_access(msg): return
     await msg.answer("Укажи дату (ДД.ММ.ГГГГ):")
@@ -123,7 +129,7 @@ async def edit_shift(msg: types.Message):
         await msg.answer("Ошибка: дата не найдена ❌")
 
 
-@dp.message(Command("прибыль"))
+@dp.message(Command("profit"))
 async def profit(msg: types.Message):
     if not check_access(msg): return
     await msg.answer("Введи дату (ДД.ММ.ГГГГ):")
@@ -152,18 +158,16 @@ async def profit(msg: types.Message):
     await msg.answer(text)
 
 
-@dp.message(Command("start"))
-async def start_cmd(msg: types.Message):
-    await msg.answer("🤖 Бот запущен! Используй /привет для списка команд.")
+@dp.message()
+async def echo(message: types.Message):
+    """Обработка любых других сообщений"""
+    if not check_access(message): return
+    await message.answer(f"Эхо: {message.text}")
 
 
 async def main():
     try:
         logger.info("🚀 Starting bot...")
-        
-        # Временно отключаем scheduler чтобы избежать ошибок
-        # setup_scheduler(bot)
-        
         logger.info("✅ Starting polling...")
         await dp.start_polling(bot)
         
