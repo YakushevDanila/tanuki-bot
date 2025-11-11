@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
@@ -30,7 +31,7 @@ def calculate_hours(start, end):
     if not start_t or not end_t:
         return ""
     delta = end_t - start_t
-    if delta.total_seconds() < 0:  # если конец после полуночи
+    if delta.total_seconds() < 0:  # ГҐГ±Г«ГЁ ГЄГ®Г­ГҐГ¶ ГЇГ®Г±Г«ГҐ ГЇГ®Г«ГіГ­Г®Г·ГЁ
         delta += timedelta(days=1)
     hours = round(delta.total_seconds() / 3600, 2)
     return hours
@@ -58,34 +59,34 @@ def get_week_and_month(date_str):
 
 
 def recalc_row(date):
-    """Пересчитать часы, прибыль, неделю и месяц"""
+    """ГЏГҐГ°ГҐГ±Г·ГЁГІГ ГІГј Г·Г Г±Г», ГЇГ°ГЁГЎГ»Г«Гј, Г­ГҐГ¤ГҐГ«Гѕ ГЁ Г¬ГҐГ±ГїГ¶"""
     headers = sheet.row_values(1)
     row = find_row_by_date(date)
     if not row:
         return
 
-    # Получаем текущие данные по строке
+    # ГЏГ®Г«ГіГ·Г ГҐГ¬ ГІГҐГЄГіГ№ГЁГҐ Г¤Г Г­Г­Г»ГҐ ГЇГ® Г±ГІГ°Г®ГЄГҐ
     values = sheet.row_values(row)
     cols = {h: i + 1 for i, h in enumerate(headers)}
 
-    start = values[cols["начало"] - 1] if "начало" in cols and len(values) >= cols["начало"] else ""
-    end = values[cols["конец"] - 1] if "конец" in cols and len(values) >= cols["конец"] else ""
-    tips = values[cols["чай"] - 1] if "чай" in cols and len(values) >= cols["чай"] else ""
-    revenue = values[cols["выручка"] - 1] if "выручка" in cols and len(values) >= cols["выручка"] else ""
+    start = values[cols["Г­Г Г·Г Г«Г®"] - 1] if "Г­Г Г·Г Г«Г®" in cols and len(values) >= cols["Г­Г Г·Г Г«Г®"] else ""
+    end = values[cols["ГЄГ®Г­ГҐГ¶"] - 1] if "ГЄГ®Г­ГҐГ¶" in cols and len(values) >= cols["ГЄГ®Г­ГҐГ¶"] else ""
+    tips = values[cols["Г·Г Г©"] - 1] if "Г·Г Г©" in cols and len(values) >= cols["Г·Г Г©"] else ""
+    revenue = values[cols["ГўГ»Г°ГіГ·ГЄГ "] - 1] if "ГўГ»Г°ГіГ·ГЄГ " in cols and len(values) >= cols["ГўГ»Г°ГіГ·ГЄГ "] else ""
 
     hours = calculate_hours(start, end)
     profit = calculate_profit(tips, hours, revenue)
     week, month = get_week_and_month(date)
 
-    # Записываем результаты в таблицу
-    if "часы" in cols:
-        sheet.update_cell(row, cols["часы"], hours)
-    if "прибыль" in cols:
-        sheet.update_cell(row, cols["прибыль"], profit)
-    if "неделя" in cols:
-        sheet.update_cell(row, cols["неделя"], week)
-    if "месяц" in cols:
-        sheet.update_cell(row, cols["месяц"], month)
+    # Г‡Г ГЇГЁГ±Г»ГўГ ГҐГ¬ Г°ГҐГ§ГіГ«ГјГІГ ГІГ» Гў ГІГ ГЎГ«ГЁГ¶Гі
+    if "Г·Г Г±Г»" in cols:
+        sheet.update_cell(row, cols["Г·Г Г±Г»"], hours)
+    if "ГЇГ°ГЁГЎГ»Г«Гј" in cols:
+        sheet.update_cell(row, cols["ГЇГ°ГЁГЎГ»Г«Гј"], profit)
+    if "Г­ГҐГ¤ГҐГ«Гї" in cols:
+        sheet.update_cell(row, cols["Г­ГҐГ¤ГҐГ«Гї"], week)
+    if "Г¬ГҐГ±ГїГ¶" in cols:
+        sheet.update_cell(row, cols["Г¬ГҐГ±ГїГ¶"], month)
 
 
 def add_shift(date, start, end):
@@ -111,10 +112,11 @@ def get_profit(date):
     row = find_row_by_date(date)
     if not row:
         return None
-    profit = sheet.cell(row, 7).value  # столбец "прибыль"
+    profit = sheet.cell(row, 7).value  # Г±ГІГ®Г«ГЎГҐГ¶ "ГЇГ°ГЁГЎГ»Г«Гј"
     return profit
 
 
 def has_shift_today(today_str):
     data = sheet.col_values(1)
     return today_str in data
+
