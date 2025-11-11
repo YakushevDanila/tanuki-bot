@@ -23,6 +23,21 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Функция очистки ввода от временных меток
+def clean_user_input(text):
+    """
+    Очищает пользовательский ввод от временных меток и лишних данных
+    Возвращает только первую часть до пробела
+    """
+    if not text:
+        return ""
+    
+    # Разделяем по пробелам и берем первую часть
+    parts = text.strip().split()
+    if parts:
+        return parts[0]
+    return ""
+
 # FSM States
 class Form(StatesGroup):
     waiting_for_date = State()
@@ -94,13 +109,15 @@ async def add_shift_start(msg: types.Message, state: FSMContext):
 
 @dp.message(Form.waiting_for_date)
 async def process_date(msg: types.Message, state: FSMContext):
-    await state.update_data(date=msg.text.strip())
+    clean_date = clean_user_input(msg.text)
+    await state.update_data(date=clean_date)
     await msg.answer("Введи время начала смены (чч:мм):")
     await state.set_state(Form.waiting_for_start)
 
 @dp.message(Form.waiting_for_start)
 async def process_start(msg: types.Message, state: FSMContext):
-    await state.update_data(start=msg.text.strip())
+    clean_start = clean_user_input(msg.text)
+    await state.update_data(start=clean_start)
     await msg.answer("Теперь время окончания (чч:мм):")
     await state.set_state(Form.waiting_for_end)
 
@@ -109,7 +126,7 @@ async def process_end(msg: types.Message, state: FSMContext):
     user_data = await state.get_data()
     date_msg = user_data['date']
     start = user_data['start']
-    end = msg.text.strip()
+    end = clean_user_input(msg.text)
     
     success = await add_shift(date_msg, start, end)
     if success:
@@ -128,7 +145,8 @@ async def revenue_start(msg: types.Message, state: FSMContext):
 
 @dp.message(Form.waiting_for_revenue_date)
 async def process_revenue_date(msg: types.Message, state: FSMContext):
-    await state.update_data(revenue_date=msg.text.strip())
+    clean_date = clean_user_input(msg.text)
+    await state.update_data(revenue_date=clean_date)
     await msg.answer("Введи сумму выручки (только число):")
     await state.set_state(Form.waiting_for_revenue)
 
@@ -136,7 +154,7 @@ async def process_revenue_date(msg: types.Message, state: FSMContext):
 async def process_revenue(msg: types.Message, state: FSMContext):
     user_data = await state.get_data()
     date_msg = user_data['revenue_date']
-    rev = msg.text.strip()
+    rev = clean_user_input(msg.text)
     
     success = await update_value(date_msg, "выручка", rev)
     if success:
@@ -146,7 +164,7 @@ async def process_revenue(msg: types.Message, state: FSMContext):
     
     await state.clear()
 
-# TIPS FLOW
+# TIPS FLOW - ОСНОВНОЕ ИСПРАВЛЕНИЕ
 @dp.message(Command("tips"))
 async def tips_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
@@ -155,7 +173,8 @@ async def tips_start(msg: types.Message, state: FSMContext):
 
 @dp.message(Form.waiting_for_tips_date)
 async def process_tips_date(msg: types.Message, state: FSMContext):
-    await state.update_data(tips_date=msg.text.strip())
+    clean_date = clean_user_input(msg.text)
+    await state.update_data(tips_date=clean_date)
     await msg.answer("Введи сумму чаевых (число):")
     await state.set_state(Form.waiting_for_tips)
 
@@ -163,7 +182,7 @@ async def process_tips_date(msg: types.Message, state: FSMContext):
 async def process_tips(msg: types.Message, state: FSMContext):
     user_data = await state.get_data()
     date_msg = user_data['tips_date']
-    tips_amount = msg.text.strip()
+    tips_amount = clean_user_input(msg.text)
     
     success = await update_value(date_msg, "чай", tips_amount)
     if success:
@@ -182,13 +201,14 @@ async def edit_start(msg: types.Message, state: FSMContext):
 
 @dp.message(Form.waiting_for_edit_date)
 async def process_edit_date(msg: types.Message, state: FSMContext):
-    await state.update_data(edit_date=msg.text.strip())
+    clean_date = clean_user_input(msg.text)
+    await state.update_data(edit_date=clean_date)
     await msg.answer("Что редактируем? (чай, начало, конец, выручка)")
     await state.set_state(Form.waiting_for_edit_field)
 
 @dp.message(Form.waiting_for_edit_field)
 async def process_edit_field(msg: types.Message, state: FSMContext):
-    field = msg.text.strip().lower()
+    field = clean_user_input(msg.text).lower()
     if field not in ["чай", "начало", "конец", "выручка"]:
         await msg.answer("Такого параметра нет 😿")
         await state.clear()
@@ -203,7 +223,7 @@ async def process_edit_value(msg: types.Message, state: FSMContext):
     user_data = await state.get_data()
     date_msg = user_data['edit_date']
     field = user_data['edit_field']
-    value = msg.text.strip()
+    value = clean_user_input(msg.text)
     
     success = await update_value(date_msg, field, value)
     if success:
@@ -222,7 +242,8 @@ async def profit_start(msg: types.Message, state: FSMContext):
 
 @dp.message(Form.waiting_for_profit_date)
 async def process_profit_date(msg: types.Message, state: FSMContext):
-    date_msg = msg.text.strip()
+    clean_date = clean_user_input(msg.text)
+    date_msg = clean_date
     try:
         day = datetime.strptime(date_msg, "%d.%m.%Y").date()
         if day > dt.today():
