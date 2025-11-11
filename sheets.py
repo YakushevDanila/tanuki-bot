@@ -1,256 +1,209 @@
-import gspread
-from gspread import Worksheet
-from gspread.utils import ValueInputOption
+import sqlite3
 import logging
 from datetime import datetime
-import os
-import asyncio
 import json
+import os
 
 logger = logging.getLogger(__name__)
 
-# Настройка доступа к Google Sheets
-def get_google_sheets_client():
-    try:
-        # Получаем данные из переменных окружения
-        google_credentials = os.getenv('GOOGLE_CREDENTIALS')
-        if not google_credentials:
-            logger.error("❌ GOOGLE_CREDENTIALS not found in environment")
-            return None
+class DatabaseManager:
+    def __init__(self, db_path='shifts.db'):
+        self.db_path = db_path
+        self._init_db()
 
-        # Если переменная окружения содержит JSON, то используем из строки
-        from google.oauth2.service_account import Credentials
-        
-        creds_dict = json.loads(google_credentials)
-        scopes = ['https://www.googleapis.com/auth/spreadsheets']
-        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        client = gspread.authorize(credentials)
-        
-        logger.info("✅ Google Sheets client created successfully")
-        return client
-    except Exception as e:
-        logger.error(f"❌ Failed to create Google Sheets client: {e}")
-        return None
-
-# Инициализация клиента и рабочих листов
-client = None
-spreadsheet = None
-shifts_worksheet = None
-
-try:
-    client = get_google_sheets_client()
-    if client:
-        sheet_id = os.getenv('SHEET_ID')
-        if not sheet_id:
-            logger.error("❌ SHEET_ID not found in environment")
-        else:
-            spreadsheet = client.open_by_key(sheet_id)
-            shifts_worksheet = spreadsheet.worksheet('Смены')
-            logger.info("✅ Google Sheets connected successfully")
-    else:
-        logger.error("❌ Google Sheets client is None")
-except Exception as e:
-    logger.error(f"❌ Failed to open worksheet: {e}")
-
-async def check_shift_exists(date_msg):
-    """
-    Проверяет, существует ли уже смена с указанной датой
-    """
-    if not shifts_worksheet:
-        logger.error("❌ Shifts worksheet not initialized")
-        return False
-
-    try:
-        # Приводим дату к правильному формату для поиска
-        date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
-        formatted_date = date_obj.strftime("%d.%m.%Y")
-        
-        logger.info(f"🔍 Searching for shift with date: {formatted_date}")
-        
-        # Ищем дату в первом столбце (столбец с датами)
-        cell = await asyncio.to_thread(shifts_worksheet.find, formatted_date)
-        
-        exists = cell is not None
-        logger.info(f"🔍 Shift existence for {formatted_date}: {exists}")
-        return exists
-        
-    except ValueError as e:
-        logger.error(f"❌ Invalid date format for {date_msg}: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"❌ Error checking shift existence for {date_msg}: {e}")
-        return False
-
-async def add_shift(date_msg, start, end):
-    """
-    Добавляет смену в таблицу
-    """
-    if not shifts_worksheet:
-        logger.error("❌ Shifts worksheet not initialized")
-        return False
-
-    try:
-        # Проверяем валидность даты
-        date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
-        formatted_date = date_obj.strftime("%d.%m.%Y")
-        
-        # Проверяем валидность времени
-        datetime.strptime(start, "%H:%M")
-        datetime.strptime(end, "%H:%M")
-        
-        logger.info(f"📝 Attempting to add shift: {formatted_date} {start}-{end}")
-        
-        # Ищем, есть ли уже смена с этой датой
-        existing_cell = await asyncio.to_thread(shifts_worksheet.find, formatted_date)
-        
-        if existing_cell:
-            # Обновляем существующую запись
-            row_index = existing_cell.row
-            logger.info(f"🔄 Updating existing shift at row {row_index}")
-            
-            await asyncio.to_thread(
-                shifts_worksheet.update,
-                f'B{row_index}:C{row_index}',
-                [[start, end]],
-                value_input_option=ValueInputOption.user_entered
-            )
-            logger.info(f"✅ Updated existing shift: {formatted_date} {start}-{end}")
-        else:
-            # Добавляем новую запись
-            new_row = [formatted_date, start, end, '', '']  # Дата, начало, конец, выручка, чай
-            logger.info(f"🆕 Adding new shift: {new_row}")
-            
-            await asyncio.to_thread(
-                shifts_worksheet.append_row,
-                new_row,
-                value_input_option=ValueInputOption.user_entered
-            )
-            logger.info(f"✅ Added new shift: {formatted_date} {start}-{end}")
-        
-        return True
-        
-    except ValueError as e:
-        logger.error(f"❌ Invalid date/time format: {date_msg} {start}-{end}. Error: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"❌ Error adding shift {date_msg} {start}-{end}: {e}")
-        import traceback
-        logger.error(f"❌ Traceback: {traceback.format_exc()}")
-        return False
-
-async def update_value(date_msg, field, value):
-    """
-    Обновляет значение в указанной дате и поле (чай, выручка, начало, конец)
-    """
-    if not shifts_worksheet:
-        logger.error("❌ Shifts worksheet not initialized")
-        return False
-
-    try:
-        # Приводим дату к правильному формату для поиска
-        date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
-        formatted_date = date_obj.strftime("%d.%m.%Y")
-        
-        logger.info(f"🔍 Searching for date: {formatted_date} to update {field}")
-        
-        # Ищем дату в первом столбце
-        cell = await asyncio.to_thread(shifts_worksheet.find, formatted_date)
-        if not cell:
-            logger.warning(f"❌ Date not found: {formatted_date}")
-            return False
-
-        row_index = cell.row
-        logger.info(f"📝 Found date at row {row_index}")
-        
-        # Определяем столбец по полю
-        column_mapping = {
-            'начало': 'B',
-            'конец': 'C', 
-            'выручка': 'D',
-            'чай': 'E'
-        }
-        
-        column_letter = column_mapping.get(field.lower())
-        if not column_letter:
-            logger.error(f"❌ Unknown field: {field}")
-            return False
-
-        # Обновляем ячейку
-        cell_address = f'{column_letter}{row_index}'
-        logger.info(f"📝 Updating cell {cell_address} with value: {value}")
-        
-        await asyncio.to_thread(
-            shifts_worksheet.update,
-            cell_address,
-            [[value]],
-            value_input_option=ValueInputOption.user_entered
-        )
-        
-        logger.info(f"✅ Updated {field} for {formatted_date}: {value}")
-        return True
-        
-    except ValueError as e:
-        logger.error(f"❌ Invalid date format for {date_msg}: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"❌ Error updating {field} for {date_msg}: {e}")
-        import traceback
-        logger.error(f"❌ Traceback: {traceback.format_exc()}")
-        return False
-
-async def get_profit(date_msg):
-    """
-    Получает прибыль для указанной даты
-    """
-    if not shifts_worksheet:
-        logger.error("❌ Shifts worksheet not initialized")
-        return None
-
-    try:
-        # Приводим дату к правильному формату для поиска
-        date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
-        formatted_date = date_obj.strftime("%d.%m.%Y")
-        
-        logger.info(f"🔍 Searching for profit data for date: {formatted_date}")
-        
-        # Ищем дату в первом столбце
-        cell = await asyncio.to_thread(shifts_worksheet.find, formatted_date)
-        if not cell:
-            logger.warning(f"❌ Date not found for profit: {formatted_date}")
-            return None
-
-        row_index = cell.row
-        
-        # Получаем выручку (столбец D)
-        revenue_cell = await asyncio.to_thread(shifts_worksheet.cell, row_index, 4)  # Столбец D = индекс 4
-        revenue = revenue_cell.value if revenue_cell.value else "0"
-        
-        # Получаем чаевые (столбец E)  
-        tips_cell = await asyncio.to_thread(shifts_worksheet.cell, row_index, 5)  # Столбец E = индекс 5
-        tips = tips_cell.value if tips_cell.value else "0"
-        
-        logger.info(f"💰 Raw data - Revenue: {revenue}, Tips: {tips}")
-        
-        # Расчет прибыли (выручка + чаевые)
+    def _init_db(self):
+        """Инициализация базы данных"""
         try:
-            revenue_float = float(str(revenue).replace(',', '.'))
-            tips_float = float(str(tips).replace(',', '.'))
-            profit = revenue_float + tips_float
-        except ValueError as e:
-            logger.error(f"❌ Invalid number format: revenue={revenue}, tips={tips}. Error: {e}")
-            return "0"
-        
-        logger.info(f"✅ Profit for {formatted_date}: {profit} (revenue: {revenue}, tips: {tips})")
-        return str(profit)
-        
-    except ValueError as e:
-        logger.error(f"❌ Invalid date format for {date_msg}: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"❌ Error getting profit for {date_msg}: {e}")
-        import traceback
-        logger.error(f"❌ Traceback: {traceback.format_exc()}")
-        return None
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS shifts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date TEXT UNIQUE NOT NULL,
+                        start_time TEXT NOT NULL,
+                        end_time TEXT NOT NULL,
+                        revenue REAL DEFAULT 0,
+                        tips REAL DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                # Создаем индекс для быстрого поиска по дате
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_date ON shifts(date)
+                ''')
+                
+                conn.commit()
+            logger.info("✅ SQLite database initialized")
+        except Exception as e:
+            logger.error(f"❌ Database initialization error: {e}")
 
-# Ленивая инициализация при импорте
-logger.info("✅ Sheets module loaded with detailed logging")
+    def _get_connection(self):
+        """Получает соединение с базой данных"""
+        return sqlite3.connect(self.db_path)
+
+    async def add_shift(self, date_msg, start, end):
+        """Добавляет смену в базу данных"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO shifts (date, start_time, end_time, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (date_msg, start, end))
+                conn.commit()
+            
+            logger.info(f"✅ Shift added to database: {date_msg}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error adding shift to database: {e}")
+            return False
+
+    async def update_value(self, date_msg, field, value):
+        """Обновляет значение в базе данных"""
+        try:
+            field_mapping = {
+                'начало': 'start_time',
+                'конец': 'end_time',
+                'выручка': 'revenue',
+                'чай': 'tips'
+            }
+            
+            db_field = field_mapping.get(field.lower())
+            if not db_field:
+                logger.error(f"❌ Unknown field: {field}")
+                return False
+
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                if db_field in ['revenue', 'tips']:
+                    # Для числовых полей
+                    try:
+                        numeric_value = float(value)
+                    except ValueError:
+                        logger.error(f"❌ Invalid numeric value: {value}")
+                        return False
+                    
+                    cursor.execute(f'''
+                        UPDATE shifts SET {db_field} = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE date = ?
+                    ''', (numeric_value, date_msg))
+                else:
+                    # Для текстовых полей
+                    cursor.execute(f'''
+                        UPDATE shifts SET {db_field} = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE date = ?
+                    ''', (value, date_msg))
+                
+                if cursor.rowcount == 0:
+                    logger.warning(f"❌ No shift found for date: {date_msg}")
+                    return False
+                
+                conn.commit()
+            
+            logger.info(f"✅ Updated {field} for {date_msg} in database")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error updating value in database: {e}")
+            return False
+
+    async def get_profit(self, date_msg):
+        """Получает прибыль из базы данных"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT revenue, tips FROM shifts WHERE date = ?
+                ''', (date_msg,))
+                
+                result = cursor.fetchone()
+                if not result:
+                    return None
+                
+                revenue, tips = result
+                profit = (revenue or 0) + (tips or 0)
+                return str(profit)
+                
+        except Exception as e:
+            logger.error(f"❌ Error getting profit from database: {e}")
+            return None
+
+    async def check_shift_exists(self, date_msg):
+        """Проверяет существование смены"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT 1 FROM shifts WHERE date = ?
+                ''', (date_msg,))
+                
+                return cursor.fetchone() is not None
+                
+        except Exception as e:
+            logger.error(f"❌ Error checking shift existence: {e}")
+            return False
+
+    async def get_shifts_in_period(self, start_date, end_date):
+        """Получает смены за период"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT date, start_time, end_time, revenue, tips 
+                    FROM shifts 
+                    WHERE date BETWEEN ? AND ?
+                    ORDER BY date
+                ''', (start_date, end_date))
+                
+                shifts = []
+                for row in cursor.fetchall():
+                    shifts.append({
+                        'date': row[0],
+                        'start': row[1],
+                        'end': row[2],
+                        'revenue': row[3] or 0,
+                        'tips': row[4] or 0
+                    })
+                
+                return shifts
+        except Exception as e:
+            logger.error(f"❌ Error getting shifts in period: {e}")
+            return []
+
+    async def get_statistics(self, start_date, end_date):
+        """Получает статистику за период"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT 
+                        COUNT(*) as shift_count,
+                        SUM(revenue) as total_revenue,
+                        SUM(tips) as total_tips,
+                        AVG(revenue) as avg_revenue,
+                        AVG(tips) as avg_tips
+                    FROM shifts 
+                    WHERE date BETWEEN ? AND ?
+                ''', (start_date, end_date))
+                
+                result = cursor.fetchone()
+                if not result or not result[0]:
+                    return None
+                
+                return {
+                    'shift_count': result[0],
+                    'total_revenue': result[1] or 0,
+                    'total_tips': result[2] or 0,
+                    'total_profit': (result[1] or 0) + (result[2] or 0),
+                    'avg_revenue': result[3] or 0,
+                    'avg_tips': result[4] or 0,
+                    'avg_profit': (result[3] or 0) + (result[4] or 0)
+                }
+        except Exception as e:
+            logger.error(f"❌ Error getting statistics: {e}")
+            return None
+
+# Глобальный экземпляр
+db_manager = DatabaseManager()
