@@ -51,10 +51,11 @@ class Form(StatesGroup):
     waiting_for_edit_field = State()
     waiting_for_edit_value = State()
     waiting_for_profit_date = State()
+    waiting_for_overwrite_confirm = State()  # Новое состояние для подтверждения перезаписи
 
 # ИМПОРТ GOOGLE SHEETS С ОБРАБОТКОЙ ОШИБОК
 try:
-    from sheets import add_shift, update_value, get_profit
+    from sheets import add_shift, update_value, get_profit, check_shift_exists  # Добавим check_shift_exists
     logger.info("✅ Google Sheets module imported")
 except Exception as e:
     logger.error(f"❌ Failed to import Google Sheets: {e}")
@@ -68,6 +69,9 @@ except Exception as e:
     async def get_profit(date_msg):
         logger.info(f"💰 Get profit (Sheets failed): {date_msg}")
         return "4500"
+    async def check_shift_exists(date_msg):
+        logger.info(f"🔍 Check shift exists (Sheets failed): {date_msg}")
+        return False  # По умолчанию считаем, что смена не существует
 
 # ВРЕМЕННО ОТКЛЮЧАЕМ ПРОВЕРКУ ДОСТУПА
 def check_access(message: types.Message):
@@ -100,7 +104,7 @@ async def show_my_id(msg: types.Message):
 async def help_cmd(msg: types.Message):
     await start_cmd(msg)
 
-# ADD SHIFT FLOW
+# ADD SHIFT FLOW - ОБНОВЛЕННЫЙ С ПРОВЕРКОЙ СУЩЕСТВУЮЩЕЙ ДАТЫ
 @dp.message(Command("add_shift"))
 async def add_shift_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
@@ -110,13 +114,53 @@ async def add_shift_start(msg: types.Message, state: FSMContext):
 @dp.message(Form.waiting_for_date)
 async def process_date(msg: types.Message, state: FSMContext):
     clean_date = clean_user_input(msg.text)
-    await state.update_data(date=clean_date)
-    await msg.answer("Введи время начала смены (чч:мм):")
-    await state.set_state(Form.waiting_for_start)
+    
+    # Проверяем валидность даты
+    try:
+        datetime.strptime(clean_date, "%d.%m.%Y").date()
+    except ValueError:
+        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ (например, 15.03.2024)")
+        await state.clear()
+        return
+    
+    # Проверяем, существует ли уже смена с этой датой
+    exists = await check_shift_exists(clean_date)
+    if exists:
+        await state.update_data(date=clean_date)
+        await msg.answer(f"❌ Смена на дату {clean_date} уже существует!\n"
+                        "Хочешь перезаписать ее? (да/нет)")
+        await state.set_state(Form.waiting_for_overwrite_confirm)
+    else:
+        await state.update_data(date=clean_date)
+        await msg.answer("Введи время начала смены (чч:мм):")
+        await state.set_state(Form.waiting_for_start)
+
+# Обработчик подтверждения перезаписи
+@dp.message(Form.waiting_for_overwrite_confirm)
+async def process_overwrite_confirm(msg: types.Message, state: FSMContext):
+    user_response = clean_user_input(msg.text).lower()
+    
+    if user_response in ['да', 'yes', 'y', 'д']:
+        await msg.answer("Введи время начала смены (чч:мм):")
+        await state.set_state(Form.waiting_for_start)
+    elif user_response in ['нет', 'no', 'n', 'н']:
+        await msg.answer("❌ Добавление смены отменено. Используй /add_shift чтобы начать заново.")
+        await state.clear()
+    else:
+        await msg.answer("Пожалуйста, ответь 'да' или 'нет'")
 
 @dp.message(Form.waiting_for_start)
 async def process_start(msg: types.Message, state: FSMContext):
     clean_start = clean_user_input(msg.text)
+    
+    # Проверяем валидность времени
+    try:
+        datetime.strptime(clean_start, "%H:%M")
+    except ValueError:
+        await msg.answer("❌ Неверный формат времени. Используй чч:мм (например, 09:00)")
+        await state.clear()
+        return
+        
     await state.update_data(start=clean_start)
     await msg.answer("Теперь время окончания (чч:мм):")
     await state.set_state(Form.waiting_for_end)
@@ -128,9 +172,17 @@ async def process_end(msg: types.Message, state: FSMContext):
     start = user_data['start']
     end = clean_user_input(msg.text)
     
+    # Проверяем валидность времени окончания
+    try:
+        datetime.strptime(end, "%H:%M")
+    except ValueError:
+        await msg.answer("❌ Неверный формат времени. Используй чч:мм (например, 18:00)")
+        await state.clear()
+        return
+    
     success = await add_shift(date_msg, start, end)
     if success:
-        await msg.answer(f"✅ Смена {date_msg} добавлена в Google Sheets 🩷")
+        await msg.answer(f"✅ Смена {date_msg} ({start}-{end}) добавлена в Google Sheets 🩷")
     else:
         await msg.answer("❌ Ошибка при добавлении в Google Sheets")
     
@@ -164,7 +216,7 @@ async def process_revenue(msg: types.Message, state: FSMContext):
     
     await state.clear()
 
-# TIPS FLOW - ОСНОВНОЕ ИСПРАВЛЕНИЕ
+# TIPS FLOW
 @dp.message(Command("tips"))
 async def tips_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
@@ -280,6 +332,12 @@ async def echo(message: types.Message):
 async def main():
     try:
         logger.info("🚀 Starting bot with Google Sheets...")
+        
+        # УДАЛЯЕМ ВЕБХУК ПЕРЕД ЗАПУСКОМ POLLING
+        logger.info("🗑️ Deleting webhook...")
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Webhook deleted successfully")
+        
         logger.info("✅ Starting polling...")
         await dp.start_polling(bot)
         
