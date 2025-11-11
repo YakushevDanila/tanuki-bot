@@ -135,4 +135,87 @@ def recalc_row(date):
         profit = calculate_profit(tips, hours, revenue)
 
         # Update cells
-       
+        if "часы" in cols:
+            sheet.update_cell(row_num, cols["часы"], hours)
+        if "прибыль" in cols:
+            sheet.update_cell(row_num, cols["прибыль"], profit)
+            
+    except Exception as e:
+        print(f"Error recalculating row: {e}")
+
+# ДЕЛАЕМ ФУНКЦИИ АСИНХРОННЫМИ
+async def add_shift(date, start, end):
+    """Add new shift to the sheet"""
+    sheet = get_sheet()
+    if not sheet:
+        print("Sheet not available in add_shift")
+        return False
+        
+    try:
+        row = [date, start, end, "", "", "", "", "", ""]
+        sheet.append_row(row)
+        recalc_row(date)
+        return True
+    except Exception as e:
+        print(f"Error adding shift: {e}")
+        return False
+
+async def update_value(date, field, value):
+    """Update specific field for a date"""
+    sheet = get_sheet()
+    if not sheet:
+        return False
+        
+    try:
+        headers = sheet.row_values(1)
+        if field not in headers:
+            return False
+        
+        col = headers.index(field) + 1
+        row_num = find_row_by_date(date)
+        
+        if not row_num:
+            return False
+        
+        sheet.update_cell(row_num, col, value)
+        recalc_row(date)
+        return True
+    except Exception as e:
+        print(f"Error updating value: {e}")
+        return False
+
+async def get_profit(date):
+    """Get profit for specific date"""
+    sheet = get_sheet()
+    if not sheet:
+        return None
+        
+    try:
+        headers = sheet.row_values(1)
+        row_num = find_row_by_date(date)
+        
+        if not row_num:
+            return None
+        
+        if "прибыль" in headers:
+            col = headers.index("прибыль") + 1
+            profit_value = sheet.cell(row_num, col).value
+            return profit_value
+        return None
+    except Exception as e:
+        print(f"Error getting profit: {e}")
+        return None
+
+async def has_shift_today(today_str):
+    """Check if shift exists for today"""
+    sheet = get_sheet()
+    if not sheet:
+        return False
+        
+    try:
+        data = sheet.col_values(1)
+        return today_str in [d.strip() for d in data]
+    except Exception:
+        return False
+
+print("Sheets module loaded (lazy initialization)")
