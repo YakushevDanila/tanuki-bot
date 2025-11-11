@@ -6,6 +6,10 @@ import asyncio
 from datetime import datetime, date as dt, timedelta
 import logging
 import os
+from dotenv import load_dotenv
+
+# Загружаем переменные из .env.local
+load_dotenv('.env.local')
 
 # Настройка логирования
 logging.basicConfig(
@@ -14,12 +18,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Получаем токен из переменных окружения
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-if not BOT_TOKEN:
-    logger.error("❌ BOT_TOKEN not found in environment!")
+# Проверяем обязательные переменные
+required_vars = ['BOT_TOKEN', 'GOOGLE_CREDENTIALS', 'SHEET_ID']
+missing_vars = [var for var in required_vars if not os.getenv(var)]
+
+if missing_vars:
+    logger.error(f"❌ Отсутствуют переменные окружения: {', '.join(missing_vars)}")
+    logger.info("💡 Создайте файл .env.local с необходимыми переменными")
     exit(1)
 
+# Получаем токен из переменных окружения
+BOT_TOKEN = os.getenv('BOT_TOKEN')
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -59,12 +68,16 @@ if storage_type == 'google_sheets':
     except Exception as e:
         logger.error(f"❌ Failed to use Google Sheets: {e}")
         # Fallback to SQLite если Google Sheets не работает
-        from database import db_manager as storage
-        add_shift = storage.add_shift
-        update_value = storage.update_value
-        get_profit = storage.get_profit
-        check_shift_exists = storage.check_shift_exists
-        logger.info("✅ Fallback to SQLite storage")
+        try:
+            from database import db_manager as storage
+            add_shift = storage.add_shift
+            update_value = storage.update_value
+            get_profit = storage.get_profit
+            check_shift_exists = storage.check_shift_exists
+            logger.info("✅ Fallback to SQLite storage")
+        except ImportError:
+            logger.error("❌ No storage backend available")
+            exit(1)
 else:
     from database import db_manager as storage
     add_shift = storage.add_shift
