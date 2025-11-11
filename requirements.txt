@@ -14,7 +14,7 @@ rsa==4.9.1
 urllib3==2.5.0
 aiogram==3.3.0
 apscheduler==3.10.4
-gspread==5.11.0
 google-auth==2.22.0
 pytz==2023.3
 pytest-asyncio==0.21.1
+
