@@ -1,5 +1,7 @@
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 import asyncio
 from datetime import datetime, date as dt
 import logging
@@ -21,11 +23,25 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ИМПОРТ GOOGLE SHEETS (ЗАМЕНИТЬ ЗАГЛУШКИ)
+# FSM States
+class Form(StatesGroup):
+    waiting_for_date = State()
+    waiting_for_start = State()
+    waiting_for_end = State()
+    waiting_for_revenue_date = State()
+    waiting_for_revenue = State()
+    waiting_for_tips_date = State()
+    waiting_for_tips = State()
+    waiting_for_edit_date = State()
+    waiting_for_edit_field = State()
+    waiting_for_edit_value = State()
+    waiting_for_profit_date = State()
+
+# ИМПОРТ GOOGLE SHEETS С ОБРАБОТКОЙ ОШИБОК
 try:
     from sheets import add_shift, update_value, get_profit
     logger.info("✅ Google Sheets module imported")
-except ImportError as e:
+except Exception as e:
     logger.error(f"❌ Failed to import Google Sheets: {e}")
     # Заглушки на случай ошибки
     async def add_shift(date_msg, start, end):
@@ -43,7 +59,6 @@ def check_access(message: types.Message):
     logger.info(f"🔓 Access granted for user: {message.from_user.id}")
     return True
 
-# Остальной код без изменений...
 @dp.message(Command("start"))
 async def start_cmd(msg: types.Message):
     if not check_access(msg): return
@@ -70,98 +85,159 @@ async def show_my_id(msg: types.Message):
 async def help_cmd(msg: types.Message):
     await start_cmd(msg)
 
+# ADD SHIFT FLOW
 @dp.message(Command("add_shift"))
-async def add_shift_cmd(msg: types.Message):
+async def add_shift_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
     await msg.answer("Введи дату смены (ДД.ММ.ГГГГ):")
-    date_msg = (await bot.wait_for("message")).text.strip()
+    await state.set_state(Form.waiting_for_date)
 
+@dp.message(Form.waiting_for_date)
+async def process_date(msg: types.Message, state: FSMContext):
+    await state.update_data(date=msg.text.strip())
     await msg.answer("Введи время начала смены (чч:мм):")
-    start = (await bot.wait_for("message")).text.strip()
+    await state.set_state(Form.waiting_for_start)
 
+@dp.message(Form.waiting_for_start)
+async def process_start(msg: types.Message, state: FSMContext):
+    await state.update_data(start=msg.text.strip())
     await msg.answer("Теперь время окончания (чч:мм):")
-    end = (await bot.wait_for("message")).text.strip()
+    await state.set_state(Form.waiting_for_end)
 
-    # ИСПОЛЬЗУЕМ РЕАЛЬНУЮ ФУНКЦИЮ GOOGLE SHEETS
+@dp.message(Form.waiting_for_end)
+async def process_end(msg: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    date_msg = user_data['date']
+    start = user_data['start']
+    end = msg.text.strip()
+    
     success = await add_shift(date_msg, start, end)
     if success:
         await msg.answer(f"✅ Смена {date_msg} добавлена в Google Sheets 🩷")
     else:
         await msg.answer("❌ Ошибка при добавлении в Google Sheets")
+    
+    await state.clear()
 
+# REVENUE FLOW
 @dp.message(Command("revenue"))
-async def revenue(msg: types.Message):
+async def revenue_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
     await msg.answer("Введи дату (ДД.ММ.ГГГГ):")
-    date_msg = (await bot.wait_for("message")).text.strip()
+    await state.set_state(Form.waiting_for_revenue_date)
 
+@dp.message(Form.waiting_for_revenue_date)
+async def process_revenue_date(msg: types.Message, state: FSMContext):
+    await state.update_data(revenue_date=msg.text.strip())
     await msg.answer("Введи сумму выручки (только число):")
-    rev = (await bot.wait_for("message")).text.strip()
+    await state.set_state(Form.waiting_for_revenue)
 
-    # ИСПОЛЬЗУЕМ РЕАЛЬНУЮ ФУНКЦИЮ GOOGLE SHEETS
+@dp.message(Form.waiting_for_revenue)
+async def process_revenue(msg: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    date_msg = user_data['revenue_date']
+    rev = msg.text.strip()
+    
     success = await update_value(date_msg, "выручка", rev)
     if success:
         await msg.answer("✅ Выручка обновлена в Google Sheets 💰✨")
     else:
         await msg.answer("❌ Не удалось найти дату или ошибка Google Sheets 😿")
+    
+    await state.clear()
 
+# TIPS FLOW
 @dp.message(Command("tips"))
-async def tips(msg: types.Message):
+async def tips_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
     await msg.answer("Введи дату (ДД.ММ.ГГГГ):")
-    date_msg = (await bot.wait_for("message")).text.strip()
+    await state.set_state(Form.waiting_for_tips_date)
 
+@dp.message(Form.waiting_for_tips_date)
+async def process_tips_date(msg: types.Message, state: FSMContext):
+    await state.update_data(tips_date=msg.text.strip())
     await msg.answer("Введи сумму чаевых (число):")
-    tips_amount = (await bot.wait_for("message")).text.strip()
+    await state.set_state(Form.waiting_for_tips)
 
-    # ИСПОЛЬЗУЕМ РЕАЛЬНУЮ ФУНКЦИЮ GOOGLE SHEETS
+@dp.message(Form.waiting_for_tips)
+async def process_tips(msg: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    date_msg = user_data['tips_date']
+    tips_amount = msg.text.strip()
+    
     success = await update_value(date_msg, "чай", tips_amount)
     if success:
         await msg.answer("✅ Чаевые добавлены в Google Sheets ☕️💖")
     else:
         await msg.answer("❌ Не удалось найти указанную дату 😿")
+    
+    await state.clear()
 
+# EDIT FLOW
 @dp.message(Command("edit"))
-async def edit_shift(msg: types.Message):
+async def edit_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
     await msg.answer("Укажи дату (ДД.ММ.ГГГГ):")
-    date_msg = (await bot.wait_for("message")).text.strip()
+    await state.set_state(Form.waiting_for_edit_date)
 
+@dp.message(Form.waiting_for_edit_date)
+async def process_edit_date(msg: types.Message, state: FSMContext):
+    await state.update_data(edit_date=msg.text.strip())
     await msg.answer("Что редактируем? (чай, начало, конец, выручка)")
-    field = (await bot.wait_for("message")).text.strip().lower()
+    await state.set_state(Form.waiting_for_edit_field)
 
+@dp.message(Form.waiting_for_edit_field)
+async def process_edit_field(msg: types.Message, state: FSMContext):
+    field = msg.text.strip().lower()
     if field not in ["чай", "начало", "конец", "выручка"]:
         await msg.answer("Такого параметра нет 😿")
+        await state.clear()
         return
-
+    
+    await state.update_data(edit_field=field)
     await msg.answer(f"Введи новое значение для {field}:")
-    value = (await bot.wait_for("message")).text.strip()
+    await state.set_state(Form.waiting_for_edit_value)
 
-    # ИСПОЛЬЗУЕМ РЕАЛЬНУЮ ФУНКЦИЮ GOOGLE SHEETS
+@dp.message(Form.waiting_for_edit_value)
+async def process_edit_value(msg: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    date_msg = user_data['edit_date']
+    field = user_data['edit_field']
+    value = msg.text.strip()
+    
     success = await update_value(date_msg, field, value)
     if success:
         await msg.answer("✅ Изменения сохранены в Google Sheets 🩷")
     else:
         await msg.answer("❌ Ошибка: дата не найдена в Google Sheets")
+    
+    await state.clear()
 
+# PROFIT FLOW
 @dp.message(Command("profit"))
-async def profit(msg: types.Message):
+async def profit_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
     await msg.answer("Введи дату (ДД.ММ.ГГГГ):")
-    date_msg = (await bot.wait_for("message")).text.strip()
+    await state.set_state(Form.waiting_for_profit_date)
+
+@dp.message(Form.waiting_for_profit_date)
+async def process_profit_date(msg: types.Message, state: FSMContext):
+    date_msg = msg.text.strip()
     try:
         day = datetime.strptime(date_msg, "%d.%m.%Y").date()
         if day > dt.today():
             await msg.answer("Этот день ещё не наступил 🐾")
+            await state.clear()
             return
     except:
         await msg.answer("Неверный формат даты ❌")
+        await state.clear()
         return
 
-    # ИСПОЛЬЗУЕМ РЕАЛЬНУЮ ФУНКЦИЮ GOOGLE SHEETS
     profit_value = await get_profit(date_msg)
     if not profit_value:
         await msg.answer("❌ Нет данных о прибыли на эту дату в Google Sheets 😿")
+        await state.clear()
         return
 
     profit_value = float(profit_value.replace(",", "."))
@@ -172,6 +248,7 @@ async def profit(msg: types.Message):
     else:
         text = f"📊 Твоя прибыль за {date_msg}: {profit_value:.2f}₽.\nТы просто суперстар 🌟 — ещё немного, и миллион твой!"
     await msg.answer(text)
+    await state.clear()
 
 @dp.message()
 async def echo(message: types.Message):
