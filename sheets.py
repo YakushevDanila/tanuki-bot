@@ -2,7 +2,7 @@ import gspread
 from gspread import Worksheet
 from gspread.utils import ValueInputOption
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import asyncio
 import json
@@ -46,7 +46,7 @@ class GoogleSheetsManager:
                 # Create new worksheet if doesn't exist
                 self.worksheet = self.spreadsheet.add_worksheet(title='Смены', rows=1000, cols=10)
                 # Add headers
-                self.worksheet.update('A1:E1', [['Дата', 'Начало', 'Конец', 'Выручка', 'Чаевые']])
+                self.worksheet.update('A1:F1', [['Дата', 'Начало', 'Конец', 'Выручка', 'Чаевые', 'Прибыль']])
             
             self.initialized = True
             logger.info("✅ Google Sheets initialized successfully")
@@ -54,6 +54,41 @@ class GoogleSheetsManager:
         except Exception as e:
             logger.error(f"❌ Failed to initialize Google Sheets: {e}")
             self.initialized = False
+
+    def _calculate_hours(self, start_time, end_time):
+        """Calculate hours between start and end time"""
+        try:
+            start = datetime.strptime(start_time, "%H:%M")
+            end = datetime.strptime(end_time, "%H:%M")
+            
+            # Handle overnight shifts
+            if end < start:
+                end += timedelta(days=1)
+            
+            duration = end - start
+            hours = duration.total_seconds() / 3600
+            return hours
+        except Exception as e:
+            logger.error(f"❌ Error calculating hours: {e}")
+            return 0
+
+    def _calculate_profit(self, start_time, end_time, revenue, tips):
+        """Calculate profit using formula: (hours * 220) + tips + (revenue * 0.015)"""
+        try:
+            hours = self._calculate_hours(start_time, end_time)
+            hourly_rate = 220
+            revenue_percentage = 0.015
+            
+            # Convert to numbers
+            revenue_val = float(str(revenue).replace(',', '.')) if revenue else 0
+            tips_val = float(str(tips).replace(',', '.')) if tips else 0
+            
+            profit = (hours * hourly_rate) + tips_val + (revenue_val * revenue_percentage)
+            logger.info(f"💰 Profit calculation: ({hours}h * {hourly_rate}) + {tips_val} + ({revenue_val} * {revenue_percentage}) = {profit}")
+            return profit
+        except Exception as e:
+            logger.error(f"❌ Error calculating profit: {e}")
+            return 0
 
     async def add_shift(self, date_msg, start, end):
         """Add shift to spreadsheet"""
@@ -82,10 +117,27 @@ class GoogleSheetsManager:
                         [[start, end]],
                         value_input_option=ValueInputOption.user_entered
                     )
+                    
+                    # Recalculate profit
+                    revenue_cell = await asyncio.to_thread(self.worksheet.cell, row, 4)
+                    tips_cell = await asyncio.to_thread(self.worksheet.cell, row, 5)
+                    
+                    revenue = revenue_cell.value if revenue_cell.value else "0"
+                    tips = tips_cell.value if tips_cell.value else "0"
+                    
+                    profit = self._calculate_profit(start, end, revenue, tips)
+                    await asyncio.to_thread(
+                        self.worksheet.update,
+                        f'F{row}',
+                        [[profit]],
+                        value_input_option=ValueInputOption.user_entered
+                    )
+                    
                     logger.info(f"📝 Updated existing shift: {formatted_date}")
                 else:
                     # Add new record
-                    new_row = [formatted_date, start, end, '', '']
+                    profit = self._calculate_profit(start, end, 0, 0)
+                    new_row = [formatted_date, start, end, '', '', profit]
                     await asyncio.to_thread(
                         self.worksheet.append_row,
                         new_row,
@@ -142,7 +194,26 @@ class GoogleSheetsManager:
                 value_input_option=ValueInputOption.user_entered
             )
             
-            logger.info(f"✅ Updated {field} for {formatted_date}")
+            # Recalculate profit after update
+            start_cell = await asyncio.to_thread(self.worksheet.cell, row, 2)  # Column B
+            end_cell = await asyncio.to_thread(self.worksheet.cell, row, 3)    # Column C
+            revenue_cell = await asyncio.to_thread(self.worksheet.cell, row, 4) # Column D
+            tips_cell = await asyncio.to_thread(self.worksheet.cell, row, 5)   # Column E
+            
+            start_time = start_cell.value if start_cell.value else "00:00"
+            end_time = end_cell.value if end_cell.value else "00:00"
+            revenue = revenue_cell.value if revenue_cell.value else "0"
+            tips = tips_cell.value if tips_cell.value else "0"
+            
+            profit = self._calculate_profit(start_time, end_time, revenue, tips)
+            await asyncio.to_thread(
+                self.worksheet.update,
+                f'F{row}',
+                [[profit]],
+                value_input_option=ValueInputOption.user_entered
+            )
+            
+            logger.info(f"✅ Updated {field} for {formatted_date} and recalculated profit: {profit}")
             return True
             
         except Exception as e:
@@ -150,7 +221,7 @@ class GoogleSheetsManager:
             return False
 
     async def get_profit(self, date_msg):
-        """Get profit for date"""
+        """Get profit for date using new formula"""
         if not self.initialized:
             logger.error("Google Sheets not initialized")
             return None
@@ -165,18 +236,33 @@ class GoogleSheetsManager:
 
             row = cell.row
             
-            # Get values
-            revenue_cell = await asyncio.to_thread(self.worksheet.cell, row, 4)
-            tips_cell = await asyncio.to_thread(self.worksheet.cell, row, 5)
+            # Get all values
+            start_cell = await asyncio.to_thread(self.worksheet.cell, row, 2)  # Column B
+            end_cell = await asyncio.to_thread(self.worksheet.cell, row, 3)    # Column C
+            revenue_cell = await asyncio.to_thread(self.worksheet.cell, row, 4) # Column D
+            tips_cell = await asyncio.to_thread(self.worksheet.cell, row, 5)   # Column E
+            profit_cell = await asyncio.to_thread(self.worksheet.cell, row, 6) # Column F
             
+            start_time = start_cell.value if start_cell.value else "00:00"
+            end_time = end_cell.value if end_cell.value else "00:00"
             revenue = revenue_cell.value if revenue_cell.value else "0"
             tips = tips_cell.value if tips_cell.value else "0"
+            existing_profit = profit_cell.value if profit_cell.value else "0"
             
-            try:
-                profit = float(str(revenue).replace(',', '.')) + float(str(tips).replace(',', '.'))
-                return str(profit)
-            except ValueError:
-                return "0"
+            # Calculate profit using new formula
+            profit = self._calculate_profit(start_time, end_time, revenue, tips)
+            
+            # Update profit cell if different
+            if abs(float(existing_profit.replace(',', '.')) - profit) > 0.01:
+                await asyncio.to_thread(
+                    self.worksheet.update,
+                    f'F{row}',
+                    [[profit]],
+                    value_input_option=ValueInputOption.user_entered
+                )
+                logger.info(f"📝 Updated profit calculation for {formatted_date}: {profit}")
+            
+            return str(profit)
                 
         except Exception as e:
             logger.error(f"❌ Error getting profit: {e}")
