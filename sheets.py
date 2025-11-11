@@ -1,221 +1,223 @@
-# -*- coding: utf-8 -*-
 import gspread
-from google.oauth2.service_account import Credentials
-from datetime import datetime, timedelta
+from gspread import Worksheet
+from gspread.utils import ValueInputOption
+import logging
+from datetime import datetime
 import os
-import json
+import asyncio
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+logger = logging.getLogger(__name__)
 
-# Global variable for sheet - will be initialized on first use
-_sheet = None
+# Настройка доступа к Google Sheets
+def get_google_sheets_client():
+    # Получаем данные из переменных окружения
+    google_credentials = os.getenv('GOOGLE_CREDENTIALS')
+    if not google_credentials:
+        logger.error("GOOGLE_CREDENTIALS not found in environment")
+        return None
 
-def get_sheets_client():
-    """Initialize Google Sheets client using environment variables"""
     try:
-        # ТОЛЬКО переменные окружения - убираем fallback на файл
-        creds_json = os.environ.get('GOOGLE_SHEETS_CREDENTIALS')
-        if not creds_json:
-            print("❌ GOOGLE_SHEETS_CREDENTIALS not found in environment")
-            return None
-            
-        print("✅ Using environment variable for credentials")
-        creds_dict = json.loads(creds_json)
-        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        
-        client = gspread.authorize(creds)
-        print("✅ Google Sheets client authorized successfully")
+        # Если переменная окружения содержит JSON, то используем из строки
+        from google.oauth2.service_account import Credentials
+        import json
+        creds_dict = json.loads(google_credentials)
+        scopes = ['https://www.googleapis.com/auth/spreadsheets']
+        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(credentials)
         return client
     except Exception as e:
-        print(f"❌ Error initializing Google Sheets client: {e}")
+        logger.error(f"Failed to create Google Sheets client: {e}")
         return None
 
-def get_sheet():
-    """Get the spreadsheet sheet with lazy initialization"""
-    global _sheet
-    if _sheet is not None:
-        return _sheet
-        
+# Инициализация клиента и рабочих листов
+client = get_google_sheets_client()
+if client:
     try:
-        SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID')
-        if not SPREADSHEET_ID:
-            print("❌ SPREADSHEET_ID not found in environment")
-            return None
-        
-        client = get_sheets_client()
-        if not client:
-            return None
-            
-        print(f"✅ Opening spreadsheet with ID: {SPREADSHEET_ID}")
-        spreadsheet = client.open_by_key(SPREADSHEET_ID)
-        _sheet = spreadsheet.sheet1
-        print("✅ Sheet accessed successfully")
-        return _sheet
+        spreadsheet = client.open_by_key(os.getenv('SHEET_ID'))
+        shifts_worksheet = spreadsheet.worksheet('Смены')
+        logger.info("✅ Google Sheets connected successfully")
     except Exception as e:
-        print(f"❌ Error accessing spreadsheet: {e}")
-        return None
+        logger.error(f"❌ Failed to open worksheet: {e}")
+        shifts_worksheet = None
+else:
+    shifts_worksheet = None
 
-def ensure_sheet():
-    """Ensure sheet is initialized"""
-    return get_sheet() is not None
-
-def find_row_by_date(date_str):
-    """Find row by date string"""
-    sheet = get_sheet()
-    if not sheet:
-        print("Sheet not available in find_row_by_date")
-        return None
-    try:
-        data = sheet.col_values(1)
-        for i, v in enumerate(data):
-            if v.strip() == date_str:
-                return i + 1
-        return None
-    except Exception as e:
-        print(f"Error finding row: {e}")
-        return None
-
-def calculate_hours(start, end):
-    """Calculate hours between start and end time"""
-    try:
-        start_t = datetime.strptime(start.strip(), "%H:%M")
-        end_t = datetime.strptime(end.strip(), "%H:%M")
-        
-        # Handle overnight shifts
-        delta = end_t - start_t
-        if delta.total_seconds() < 0:
-            delta += timedelta(days=1)
-        
-        hours = round(delta.total_seconds() / 3600, 2)
-        return hours
-    except Exception:
-        return ""
-
-def calculate_profit(tips, hours, revenue):
-    """Calculate total profit"""
-    try:
-        tips = float(str(tips).replace(",", ".") or 0)
-        hours = float(str(hours).replace(",", ".") or 0)
-        revenue = float(str(revenue).replace(",", ".") or 0)
-        
-        # Profit formula: tips + (hours * 220) + (revenue * 0.015)
-        profit = tips + (hours * 220) + (revenue * 0.015)
-        return round(profit, 2)
-    except Exception:
-        return ""
-
-def recalc_row(date):
-    """Recalculate hours and profit for a row"""
-    sheet = get_sheet()
-    if not sheet:
-        print("Sheet not available in recalc_row")
-        return
-        
-    try:
-        headers = sheet.row_values(1)
-        row_num = find_row_by_date(date)
-        if not row_num:
-            return
-
-        values = sheet.row_values(row_num)
-        
-        # Map headers to column numbers
-        cols = {}
-        for i, header in enumerate(headers):
-            cols[header.lower()] = i + 1
-
-        # Extract values
-        start = values[cols.get("начало", 0) - 1] if cols.get("начало") and len(values) >= cols["начало"] else ""
-        end = values[cols.get("конец", 0) - 1] if cols.get("конец") and len(values) >= cols["конец"] else ""
-        tips = values[cols.get("чай", 0) - 1] if cols.get("чай") and len(values) >= cols["чай"] else ""
-        revenue = values[cols.get("выручка", 0) - 1] if cols.get("выручка") and len(values) >= cols["выручка"] else ""
-
-        # Calculate new values
-        hours = calculate_hours(start, end)
-        profit = calculate_profit(tips, hours, revenue)
-
-        # Update cells
-        if "часы" in cols:
-            sheet.update_cell(row_num, cols["часы"], hours)
-        if "прибыль" in cols:
-            sheet.update_cell(row_num, cols["прибыль"], profit)
-            
-    except Exception as e:
-        print(f"Error recalculating row: {e}")
-
-# ДЕЛАЕМ ФУНКЦИИ АСИНХРОННЫМИ
-async def add_shift(date, start, end):
-    """Add new shift to the sheet"""
-    sheet = get_sheet()
-    if not sheet:
-        print("Sheet not available in add_shift")
+async def check_shift_exists(date_msg):
+    """
+    Проверяет, существует ли уже смена с указанной датой
+    """
+    if not shifts_worksheet:
+        logger.error("Shifts worksheet not initialized")
         return False
-        
+
     try:
-        row = [date, start, end, "", "", "", "", "", ""]
-        sheet.append_row(row)
-        recalc_row(date)
+        # Приводим дату к правильному формату для поиска
+        date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
+        formatted_date = date_obj.strftime("%d.%m.%Y")
+        
+        # Ищем дату в первом столбце (столбец с датами)
+        cell = await asyncio.to_thread(shifts_worksheet.find, formatted_date)
+        
+        logger.info(f"🔍 Checked shift existence for {formatted_date}: {'exists' if cell else 'not found'}")
+        return cell is not None
+        
+    except ValueError as e:
+        logger.error(f"❌ Invalid date format for {date_msg}: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Error checking shift existence for {date_msg}: {e}")
+        return False
+
+async def add_shift(date_msg, start, end):
+    """
+    Добавляет смену в таблицу
+    """
+    if not shifts_worksheet:
+        logger.error("Shifts worksheet not initialized")
+        return False
+
+    try:
+        # Проверяем валидность даты
+        date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
+        formatted_date = date_obj.strftime("%d.%m.%Y")
+        
+        # Проверяем валидность времени
+        datetime.strptime(start, "%H:%M")
+        datetime.strptime(end, "%H:%M")
+        
+        # Ищем, есть ли уже смена с этой датой
+        existing_cell = await asyncio.to_thread(shifts_worksheet.find, formatted_date)
+        
+        if existing_cell:
+            # Обновляем существующую запись
+            row_index = existing_cell.row
+            await asyncio.to_thread(
+                shifts_worksheet.update,
+                f'B{row_index}:C{row_index}',
+                [[start, end]],
+                value_input_option=ValueInputOption.user_entered
+            )
+            logger.info(f"📝 Updated existing shift: {formatted_date} {start}-{end}")
+        else:
+            # Добавляем новую запись
+            new_row = [formatted_date, start, end, '', '']  # Дата, начало, конец, выручка, чай
+            await asyncio.to_thread(
+                shifts_worksheet.append_row,
+                new_row,
+                value_input_option=ValueInputOption.user_entered
+            )
+            logger.info(f"✅ Added new shift: {formatted_date} {start}-{end}")
+        
         return True
+        
+    except ValueError as e:
+        logger.error(f"❌ Invalid date/time format: {date_msg} {start}-{end}. Error: {e}")
+        return False
     except Exception as e:
-        print(f"Error adding shift: {e}")
+        logger.error(f"❌ Error adding shift {date_msg} {start}-{end}: {e}")
         return False
 
-async def update_value(date, field, value):
-    """Update specific field for a date"""
-    sheet = get_sheet()
-    if not sheet:
+async def update_value(date_msg, field, value):
+    """
+    Обновляет значение в указанной дате и поле (чай, выручка, начало, конец)
+    """
+    if not shifts_worksheet:
+        logger.error("Shifts worksheet not initialized")
         return False
-        
+
     try:
-        headers = sheet.row_values(1)
-        if field not in headers:
+        # Приводим дату к правильному формату для поиска
+        date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
+        formatted_date = date_obj.strftime("%d.%m.%Y")
+        
+        # Ищем дату в первом столбце
+        cell = await asyncio.to_thread(shifts_worksheet.find, formatted_date)
+        if not cell:
+            logger.warning(f"📅 Date not found: {formatted_date}")
             return False
+
+        row_index = cell.row
         
-        col = headers.index(field) + 1
-        row_num = find_row_by_date(date)
+        # Определяем столбец по полю
+        column_mapping = {
+            'начало': 'B',
+            'конец': 'C', 
+            'выручка': 'D',
+            'чай': 'E'
+        }
         
-        if not row_num:
+        column_letter = column_mapping.get(field)
+        if not column_letter:
+            logger.error(f"❌ Unknown field: {field}")
             return False
+
+        # Обновляем ячейку
+        await asyncio.to_thread(
+            shifts_worksheet.update,
+            f'{column_letter}{row_index}',
+            value,
+            value_input_option=ValueInputOption.user_entered
+        )
         
-        sheet.update_cell(row_num, col, value)
-        recalc_row(date)
+        logger.info(f"📝 Updated {field} for {formatted_date}: {value}")
         return True
+        
+    except ValueError as e:
+        logger.error(f"❌ Invalid date format for {date_msg}: {e}")
+        return False
     except Exception as e:
-        print(f"Error updating value: {e}")
+        logger.error(f"❌ Error updating {field} for {date_msg}: {e}")
         return False
 
-async def get_profit(date):
-    """Get profit for specific date"""
-    sheet = get_sheet()
-    if not sheet:
+async def get_profit(date_msg):
+    """
+    Получает прибыль для указанной даты
+    В данном примере возвращаем выручку как прибыль для простоты
+    В реальном приложении здесь должна быть логика расчета прибыли
+    """
+    if not shifts_worksheet:
+        logger.error("Shifts worksheet not initialized")
         return None
-        
+
     try:
-        headers = sheet.row_values(1)
-        row_num = find_row_by_date(date)
+        # Приводим дату к правильному формату для поиска
+        date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
+        formatted_date = date_obj.strftime("%d.%m.%Y")
         
-        if not row_num:
+        # Ищем дату в первом столбце
+        cell = await asyncio.to_thread(shifts_worksheet.find, formatted_date)
+        if not cell:
+            logger.warning(f"📅 Date not found for profit: {formatted_date}")
             return None
+
+        row_index = cell.row
         
-        if "прибыль" in headers:
-            col = headers.index("прибыль") + 1
-            profit_value = sheet.cell(row_num, col).value
-            return profit_value
+        # Получаем выручку (столбец D)
+        revenue_cell = await asyncio.to_thread(shifts_worksheet.cell, row_index, 4)  # Столбец D = индекс 4
+        revenue = revenue_cell.value if revenue_cell.value else "0"
+        
+        # Получаем чаевые (столбец E)  
+        tips_cell = await asyncio.to_thread(shifts_worksheet.cell, row_index, 5)  # Столбец E = индекс 5
+        tips = tips_cell.value if tips_cell.value else "0"
+        
+        # Расчет прибыли (выручка + чаевые)
+        try:
+            revenue_float = float(str(revenue).replace(',', '.'))
+            tips_float = float(str(tips).replace(',', '.'))
+            profit = revenue_float + tips_float
+        except ValueError:
+            logger.error(f"❌ Invalid number format: revenue={revenue}, tips={tips}")
+            return "0"
+        
+        logger.info(f"💰 Profit for {formatted_date}: {profit} (revenue: {revenue}, tips: {tips})")
+        return str(profit)
+        
+    except ValueError as e:
+        logger.error(f"❌ Invalid date format for {date_msg}: {e}")
         return None
     except Exception as e:
-        print(f"Error getting profit: {e}")
+        logger.error(f"❌ Error getting profit for {date_msg}: {e}")
         return None
 
-async def has_shift_today(today_str):
-    """Check if shift exists for today"""
-    sheet = get_sheet()
-    if not sheet:
-        return False
-        
-    try:
-        data = sheet.col_values(1)
-        return today_str in [d.strip() for d in data]
-    except Exception:
-        return False
-
-print("Sheets module loaded (lazy initialization)")
+# Ленивая инициализация при импорте
+logger.info("Sheets module loaded (lazy initialization)")
