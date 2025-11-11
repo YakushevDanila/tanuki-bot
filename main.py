@@ -53,11 +53,11 @@ class Form(StatesGroup):
     waiting_for_profit_date = State()
     waiting_for_overwrite_confirm = State()
 
-# ЗАГЛУШКИ ДЛЯ GOOGLE SHEETS - ГАРАНТИРОВАННАЯ РАБОТА БЕЗ GOOGLE SHEETS
-logger.info("🔧 Using stub functions for Google Sheets - bot will work without Google Sheets")
-
-# Временное хранилище данных (в памяти)
+# ВРЕМЕННОЕ ХРАНИЛИЩЕ ДАННЫХ (в памяти)
 temp_storage = {}
+
+# ЗАГЛУШКИ ДЛЯ GOOGLE SHEETS
+logger.info("🔧 Using stub functions - bot working without Google Sheets")
 
 async def add_shift(date_msg, start, end):
     """Добавляет смену во временное хранилище"""
@@ -70,17 +70,20 @@ async def add_shift(date_msg, start, end):
             'tips': '0'
         }
         logger.info(f"📅 [STUB] Shift added: {clean_date} {start}-{end}")
+        logger.info(f"📊 Current storage: {list(temp_storage.keys())}")
         return True
     except Exception as e:
-        logger.error(f"❌ Error in add_shift stub: {e}")
+        logger.error(f"❌ Error in add_shift: {e}")
         return False
 
 async def update_value(date_msg, field, value):
     """Обновляет значение во временном хранилище"""
     try:
         clean_date = clean_user_input(date_msg)
+        logger.info(f"🔍 Looking for date: {clean_date} in storage: {list(temp_storage.keys())}")
+        
         if clean_date not in temp_storage:
-            logger.warning(f"❌ Date not found in temp storage: {clean_date}")
+            logger.warning(f"❌ Date not found: {clean_date}")
             return False
         
         field_mapping = {
@@ -97,28 +100,42 @@ async def update_value(date_msg, field, value):
         
         temp_storage[clean_date][field_key] = clean_user_input(value)
         logger.info(f"📝 [STUB] Updated: {clean_date} {field} = {value}")
+        logger.info(f"📊 Current data for {clean_date}: {temp_storage[clean_date]}")
         return True
     except Exception as e:
-        logger.error(f"❌ Error in update_value stub: {e}")
+        logger.error(f"❌ Error in update_value: {e}")
         return False
 
 async def get_profit(date_msg):
     """Рассчитывает прибыль из временного хранилища"""
     try:
         clean_date = clean_user_input(date_msg)
+        logger.info(f"🔍 Looking for profit data for: {clean_date} in {list(temp_storage.keys())}")
+        
         if clean_date not in temp_storage:
             logger.warning(f"❌ Date not found for profit: {clean_date}")
-            return "0"
+            return None
         
         data = temp_storage[clean_date]
-        revenue = float(data.get('revenue', '0').replace(',', '.'))
-        tips = float(data.get('tips', '0').replace(',', '.'))
-        profit = revenue + tips
+        revenue_str = data.get('revenue', '0').replace(',', '.')
+        tips_str = data.get('tips', '0').replace(',', '.')
         
-        logger.info(f"💰 [STUB] Profit for {clean_date}: {profit}")
+        logger.info(f"💰 Raw data - revenue: '{revenue_str}', tips: '{tips_str}'")
+        
+        # Преобразуем в числа
+        try:
+            revenue = float(revenue_str) if revenue_str else 0
+            tips = float(tips_str) if tips_str else 0
+        except ValueError as e:
+            logger.error(f"❌ Number conversion error: {e}")
+            revenue = 0
+            tips = 0
+        
+        profit = revenue + tips
+        logger.info(f"✅ Calculated profit: {profit}")
         return str(profit)
     except Exception as e:
-        logger.error(f"❌ Error in get_profit stub: {e}")
+        logger.error(f"❌ Error in get_profit: {e}")
         return "0"
 
 async def check_shift_exists(date_msg):
@@ -126,10 +143,10 @@ async def check_shift_exists(date_msg):
     try:
         clean_date = clean_user_input(date_msg)
         exists = clean_date in temp_storage
-        logger.info(f"🔍 [STUB] Check shift exists {clean_date}: {exists}")
+        logger.info(f"🔍 Check shift exists {clean_date}: {exists}")
         return exists
     except Exception as e:
-        logger.error(f"❌ Error in check_shift_exists stub: {e}")
+        logger.error(f"❌ Error in check_shift_exists: {e}")
         return False
 
 # ВРЕМЕННО ОТКЛЮЧАЕМ ПРОВЕРКУ ДОСТУПА
@@ -151,7 +168,7 @@ async def start_cmd(msg: types.Message):
         "/myid — показать мой ID\n"
         "/help — показать это сообщение\n"
         "\n"
-        "⚠️ Режим тестирования: данные сохраняются в памяти (при перезапуске бота данные сбросятся)"
+        "⚠️ Режим тестирования: данные сохраняются в памяти"
     )
     await msg.answer(text)
 
@@ -259,6 +276,14 @@ async def revenue_start(msg: types.Message, state: FSMContext):
 @dp.message(Form.waiting_for_revenue_date)
 async def process_revenue_date(msg: types.Message, state: FSMContext):
     clean_date = clean_user_input(msg.text)
+    
+    # Проверяем существование смены
+    exists = await check_shift_exists(clean_date)
+    if not exists:
+        await msg.answer(f"❌ Смена на дату {clean_date} не найдена. Сначала добавь смену через /add_shift")
+        await state.clear()
+        return
+        
     await state.update_data(revenue_date=clean_date)
     await msg.answer("Введи сумму выручки (только число):")
     await state.set_state(Form.waiting_for_revenue)
@@ -269,11 +294,19 @@ async def process_revenue(msg: types.Message, state: FSMContext):
     date_msg = user_data['revenue_date']
     rev = clean_user_input(msg.text)
     
+    # Проверяем, что введено число
+    try:
+        float(rev)
+    except ValueError:
+        await msg.answer("❌ Неверный формат числа. Введи только цифры (например: 5000)")
+        await state.clear()
+        return
+    
     success = await update_value(date_msg, "выручка", rev)
     if success:
-        await msg.answer("✅ Выручка обновлена 💰✨")
+        await msg.answer(f"✅ Выручка {rev}₽ обновлена для даты {date_msg} 💰✨")
     else:
-        await msg.answer("❌ Не удалось найти дату 😿")
+        await msg.answer("❌ Не удалось обновить выручку")
     
     await state.clear()
 
@@ -287,6 +320,14 @@ async def tips_start(msg: types.Message, state: FSMContext):
 @dp.message(Form.waiting_for_tips_date)
 async def process_tips_date(msg: types.Message, state: FSMContext):
     clean_date = clean_user_input(msg.text)
+    
+    # Проверяем существование смены
+    exists = await check_shift_exists(clean_date)
+    if not exists:
+        await msg.answer(f"❌ Смена на дату {clean_date} не найдена. Сначала добавь смену через /add_shift")
+        await state.clear()
+        return
+        
     await state.update_data(tips_date=clean_date)
     await msg.answer("Введи сумму чаевых (число):")
     await state.set_state(Form.waiting_for_tips)
@@ -297,11 +338,19 @@ async def process_tips(msg: types.Message, state: FSMContext):
     date_msg = user_data['tips_date']
     tips_amount = clean_user_input(msg.text)
     
+    # Проверяем, что введено число
+    try:
+        float(tips_amount)
+    except ValueError:
+        await msg.answer("❌ Неверный формат числа. Введи только цифры (например: 500)")
+        await state.clear()
+        return
+    
     success = await update_value(date_msg, "чай", tips_amount)
     if success:
-        await msg.answer("✅ Чаевые добавлены ☕️💖")
+        await msg.answer(f"✅ Чаевые {tips_amount}₽ добавлены для даты {date_msg} ☕️💖")
     else:
-        await msg.answer("❌ Не удалось найти указанную дату 😿")
+        await msg.answer("❌ Не удалось добавить чаевые")
     
     await state.clear()
 
@@ -315,6 +364,14 @@ async def edit_start(msg: types.Message, state: FSMContext):
 @dp.message(Form.waiting_for_edit_date)
 async def process_edit_date(msg: types.Message, state: FSMContext):
     clean_date = clean_user_input(msg.text)
+    
+    # Проверяем существование смены
+    exists = await check_shift_exists(clean_date)
+    if not exists:
+        await msg.answer(f"❌ Смена на дату {clean_date} не найдена. Сначала добавь смену через /add_shift")
+        await state.clear()
+        return
+        
     await state.update_data(edit_date=clean_date)
     await msg.answer("Что редактируем? (чай, начало, конец, выручка)")
     await state.set_state(Form.waiting_for_edit_field)
@@ -323,7 +380,7 @@ async def process_edit_date(msg: types.Message, state: FSMContext):
 async def process_edit_field(msg: types.Message, state: FSMContext):
     field = clean_user_input(msg.text).lower()
     if field not in ["чай", "начало", "конец", "выручка"]:
-        await msg.answer("Такого параметра нет 😿")
+        await msg.answer("❌ Такого параметра нет. Используй: чай, начало, конец, выручка")
         await state.clear()
         return
     
@@ -340,9 +397,9 @@ async def process_edit_value(msg: types.Message, state: FSMContext):
     
     success = await update_value(date_msg, field, value)
     if success:
-        await msg.answer("✅ Изменения сохранены 🩷")
+        await msg.answer(f"✅ {field} изменен на {value} для даты {date_msg} 🩷")
     else:
-        await msg.answer("❌ Ошибка: дата не найдена")
+        await msg.answer("❌ Ошибка: не удалось сохранить изменения")
     
     await state.clear()
 
@@ -356,31 +413,44 @@ async def profit_start(msg: types.Message, state: FSMContext):
 @dp.message(Form.waiting_for_profit_date)
 async def process_profit_date(msg: types.Message, state: FSMContext):
     clean_date = clean_user_input(msg.text)
-    date_msg = clean_date
+    
+    # Проверяем валидность даты
     try:
-        day = datetime.strptime(date_msg, "%d.%m.%Y").date()
+        day = datetime.strptime(clean_date, "%d.%m.%Y").date()
         if day > dt.today():
-            await msg.answer("Этот день ещё не наступил 🐾")
+            await msg.answer("❌ Этот день ещё не наступил 🐾")
             await state.clear()
             return
-    except:
-        await msg.answer("Неверный формат даты ❌")
+    except ValueError:
+        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ")
         await state.clear()
         return
 
-    profit_value = await get_profit(date_msg)
-    if not profit_value:
+    # Проверяем существование смены
+    exists = await check_shift_exists(clean_date)
+    if not exists:
+        await msg.answer(f"❌ Смена на дату {clean_date} не найдена. Сначала добавь смену через /add_shift")
+        await state.clear()
+        return
+
+    profit_value = await get_profit(clean_date)
+    if profit_value is None:
         await msg.answer("❌ Нет данных о прибыли на эту дату 😿")
         await state.clear()
         return
 
-    profit_value = float(profit_value.replace(",", "."))
-    if profit_value < 4000:
-        text = f"📊 Твоя прибыль за {date_msg}: {profit_value:.2f}₽.\nНе расстраивайся, котик 🐾 — ты отлично поработала!"
-    elif 4000 <= profit_value <= 6000:
-        text = f"📊 Твоя прибыль за {date_msg}: {profit_value:.2f}₽.\nНеплохая смена 😺 — беги радовать себя чем-то вкусным!"
+    try:
+        profit_float = float(profit_value.replace(",", "."))
+    except ValueError:
+        profit_float = 0
+
+    if profit_float < 4000:
+        text = f"📊 Твоя прибыль за {clean_date}: {profit_float:.2f}₽.\nНе расстраивайся, котик 🐾 — ты отлично поработала!"
+    elif 4000 <= profit_float <= 6000:
+        text = f"📊 Твоя прибыль за {clean_date}: {profit_float:.2f}₽.\nНеплохая смена 😺 — беги радовать себя чем-то вкусным!"
     else:
-        text = f"📊 Твоя прибыль за {date_msg}: {profit_value:.2f}₽.\nТы просто суперстар 🌟 — ещё немного, и миллион твой!"
+        text = f"📊 Твоя прибыль за {clean_date}: {profit_float:.2f}₽.\nТы просто суперстар 🌟 — ещё немного, и миллион твой!"
+    
     await msg.answer(text)
     await state.clear()
 
@@ -388,11 +458,11 @@ async def process_profit_date(msg: types.Message, state: FSMContext):
 async def echo(message: types.Message):
     """Обработка любых других сообщений"""
     if not check_access(message): return
-    await message.answer(f"Эхо: {message.text}")
+    await message.answer("Не понимаю эту команду 😿\nИспользуй /help для списка команд")
 
 async def main():
     try:
-        logger.info("🚀 Starting bot with STUB storage...")
+        logger.info("🚀 Starting bot with temporary storage...")
         
         # УДАЛЯЕМ ВЕБХУК ПЕРЕД ЗАПУСКОМ POLLING
         logger.info("🗑️ Deleting webhook...")
@@ -408,5 +478,5 @@ async def main():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    print("🟢 Bot starting with STUB storage...")
+    print("🟢 Bot starting with temporary storage...")
     asyncio.run(main())
