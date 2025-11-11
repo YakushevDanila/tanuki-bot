@@ -51,27 +51,86 @@ class Form(StatesGroup):
     waiting_for_edit_field = State()
     waiting_for_edit_value = State()
     waiting_for_profit_date = State()
-    waiting_for_overwrite_confirm = State()  # Новое состояние для подтверждения перезаписи
+    waiting_for_overwrite_confirm = State()
 
-# ИМПОРТ GOOGLE SHEETS С ОБРАБОТКОЙ ОШИБОК
-try:
-    from sheets import add_shift, update_value, get_profit, check_shift_exists  # Добавим check_shift_exists
-    logger.info("✅ Google Sheets module imported")
-except Exception as e:
-    logger.error(f"❌ Failed to import Google Sheets: {e}")
-    # Заглушки на случай ошибки
-    async def add_shift(date_msg, start, end):
-        logger.info(f"📅 Shift added (Sheets failed): {date_msg} {start}-{end}")
+# ЗАГЛУШКИ ДЛЯ GOOGLE SHEETS - ГАРАНТИРОВАННАЯ РАБОТА БЕЗ GOOGLE SHEETS
+logger.info("🔧 Using stub functions for Google Sheets - bot will work without Google Sheets")
+
+# Временное хранилище данных (в памяти)
+temp_storage = {}
+
+async def add_shift(date_msg, start, end):
+    """Добавляет смену во временное хранилище"""
+    try:
+        clean_date = clean_user_input(date_msg)
+        temp_storage[clean_date] = {
+            'start': clean_user_input(start),
+            'end': clean_user_input(end),
+            'revenue': '0',
+            'tips': '0'
+        }
+        logger.info(f"📅 [STUB] Shift added: {clean_date} {start}-{end}")
         return True
-    async def update_value(date_msg, field, value):
-        logger.info(f"📝 Updated (Sheets failed): {date_msg} {field} = {value}")
+    except Exception as e:
+        logger.error(f"❌ Error in add_shift stub: {e}")
+        return False
+
+async def update_value(date_msg, field, value):
+    """Обновляет значение во временном хранилище"""
+    try:
+        clean_date = clean_user_input(date_msg)
+        if clean_date not in temp_storage:
+            logger.warning(f"❌ Date not found in temp storage: {clean_date}")
+            return False
+        
+        field_mapping = {
+            'выручка': 'revenue',
+            'чай': 'tips',
+            'начало': 'start', 
+            'конец': 'end'
+        }
+        
+        field_key = field_mapping.get(field.lower())
+        if not field_key:
+            logger.error(f"❌ Unknown field: {field}")
+            return False
+        
+        temp_storage[clean_date][field_key] = clean_user_input(value)
+        logger.info(f"📝 [STUB] Updated: {clean_date} {field} = {value}")
         return True
-    async def get_profit(date_msg):
-        logger.info(f"💰 Get profit (Sheets failed): {date_msg}")
-        return "4500"
-    async def check_shift_exists(date_msg):
-        logger.info(f"🔍 Check shift exists (Sheets failed): {date_msg}")
-        return False  # По умолчанию считаем, что смена не существует
+    except Exception as e:
+        logger.error(f"❌ Error in update_value stub: {e}")
+        return False
+
+async def get_profit(date_msg):
+    """Рассчитывает прибыль из временного хранилища"""
+    try:
+        clean_date = clean_user_input(date_msg)
+        if clean_date not in temp_storage:
+            logger.warning(f"❌ Date not found for profit: {clean_date}")
+            return "0"
+        
+        data = temp_storage[clean_date]
+        revenue = float(data.get('revenue', '0').replace(',', '.'))
+        tips = float(data.get('tips', '0').replace(',', '.'))
+        profit = revenue + tips
+        
+        logger.info(f"💰 [STUB] Profit for {clean_date}: {profit}")
+        return str(profit)
+    except Exception as e:
+        logger.error(f"❌ Error in get_profit stub: {e}")
+        return "0"
+
+async def check_shift_exists(date_msg):
+    """Проверяет существование смены во временном хранилище"""
+    try:
+        clean_date = clean_user_input(date_msg)
+        exists = clean_date in temp_storage
+        logger.info(f"🔍 [STUB] Check shift exists {clean_date}: {exists}")
+        return exists
+    except Exception as e:
+        logger.error(f"❌ Error in check_shift_exists stub: {e}")
+        return False
 
 # ВРЕМЕННО ОТКЛЮЧАЕМ ПРОВЕРКУ ДОСТУПА
 def check_access(message: types.Message):
@@ -90,7 +149,9 @@ async def start_cmd(msg: types.Message):
         "/edit — изменить данные\n"
         "/profit — узнать прибыль за день\n"
         "/myid — показать мой ID\n"
-        "/help — показать это сообщение"
+        "/help — показать это сообщение\n"
+        "\n"
+        "⚠️ Режим тестирования: данные сохраняются в памяти (при перезапуске бота данные сбросятся)"
     )
     await msg.answer(text)
 
@@ -104,7 +165,7 @@ async def show_my_id(msg: types.Message):
 async def help_cmd(msg: types.Message):
     await start_cmd(msg)
 
-# ADD SHIFT FLOW - ОБНОВЛЕННЫЙ С ПРОВЕРКОЙ СУЩЕСТВУЮЩЕЙ ДАТЫ
+# ADD SHIFT FLOW
 @dp.message(Command("add_shift"))
 async def add_shift_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
@@ -182,9 +243,9 @@ async def process_end(msg: types.Message, state: FSMContext):
     
     success = await add_shift(date_msg, start, end)
     if success:
-        await msg.answer(f"✅ Смена {date_msg} ({start}-{end}) добавлена в Google Sheets 🩷")
+        await msg.answer(f"✅ Смена {date_msg} ({start}-{end}) добавлена 🩷")
     else:
-        await msg.answer("❌ Ошибка при добавлении в Google Sheets")
+        await msg.answer("❌ Ошибка при добавлении смены")
     
     await state.clear()
 
@@ -210,9 +271,9 @@ async def process_revenue(msg: types.Message, state: FSMContext):
     
     success = await update_value(date_msg, "выручка", rev)
     if success:
-        await msg.answer("✅ Выручка обновлена в Google Sheets 💰✨")
+        await msg.answer("✅ Выручка обновлена 💰✨")
     else:
-        await msg.answer("❌ Не удалось найти дату или ошибка Google Sheets 😿")
+        await msg.answer("❌ Не удалось найти дату 😿")
     
     await state.clear()
 
@@ -238,7 +299,7 @@ async def process_tips(msg: types.Message, state: FSMContext):
     
     success = await update_value(date_msg, "чай", tips_amount)
     if success:
-        await msg.answer("✅ Чаевые добавлены в Google Sheets ☕️💖")
+        await msg.answer("✅ Чаевые добавлены ☕️💖")
     else:
         await msg.answer("❌ Не удалось найти указанную дату 😿")
     
@@ -279,9 +340,9 @@ async def process_edit_value(msg: types.Message, state: FSMContext):
     
     success = await update_value(date_msg, field, value)
     if success:
-        await msg.answer("✅ Изменения сохранены в Google Sheets 🩷")
+        await msg.answer("✅ Изменения сохранены 🩷")
     else:
-        await msg.answer("❌ Ошибка: дата не найдена в Google Sheets")
+        await msg.answer("❌ Ошибка: дата не найдена")
     
     await state.clear()
 
@@ -309,7 +370,7 @@ async def process_profit_date(msg: types.Message, state: FSMContext):
 
     profit_value = await get_profit(date_msg)
     if not profit_value:
-        await msg.answer("❌ Нет данных о прибыли на эту дату в Google Sheets 😿")
+        await msg.answer("❌ Нет данных о прибыли на эту дату 😿")
         await state.clear()
         return
 
@@ -331,7 +392,7 @@ async def echo(message: types.Message):
 
 async def main():
     try:
-        logger.info("🚀 Starting bot with Google Sheets...")
+        logger.info("🚀 Starting bot with STUB storage...")
         
         # УДАЛЯЕМ ВЕБХУК ПЕРЕД ЗАПУСКОМ POLLING
         logger.info("🗑️ Deleting webhook...")
@@ -347,5 +408,5 @@ async def main():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    print("🟢 Bot starting with Google Sheets...")
+    print("🟢 Bot starting with STUB storage...")
     asyncio.run(main())
