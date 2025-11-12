@@ -1,7 +1,12 @@
-BOT_TOKEN = "7906790313:AAGlUn0JROFrfVASQdVPxDnoFXkHA8CucF4"
-SPREADSHEET_ID = "1mHC7Wdp8Xwpq4taZ8RE6PXiePUISW7eUDworN_Daf3g"
-CREDENTIALS_FILE = "credentials.json"
-ALLOWED_USER_ID = 462439834  # Telegram ID Àííû
+import os
 
-TIMEZONE = "Europe/Moscow"
+# Часовой пояс (Москва)
+TIMEZONE = os.getenv('TIMEZONE', 'Europe/Moscow')
+
+# ID пользователя для уведомлений (можно получить через /myid)
+USER_ID = int(os.getenv('USER_ID', '0'))
+
+# Проверяем обязательные переменные для уведомлений
+if not USER_ID:
+    print("⚠️  USER_ID not set - notifications will be disabled")
 
