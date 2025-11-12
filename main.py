@@ -67,6 +67,7 @@ def get_main_keyboard(user_id: int):
                 KeyboardButton(text="📅 График")
             ],
             [
+                KeyboardButton(text="📅 Неделя"),
                 KeyboardButton(text="🌸 Помощь")
             ]
         ],
@@ -450,7 +451,8 @@ async def help_cmd(msg: types.Message):
         "• *🎯 Сегодня* - быстрый ввод за сегодня\n"
         "• *🔄 Изменить* - исправить данные\n"
         "• *🗑️ Удалить* - удалить смену (осторожно!)\n"
-        "• *📅 График* - посмотреть смены на неделю\n\n"
+        "• *📅 График* - посмотреть смены на неделю\n"
+        "• *📅 Неделя* - добавить смены на всю неделю\n\n"
         
         "💫 *ПРИМЕРЫ ИСПОЛЬЗОВАНИЯ:*\n"
         "• *Добавить смену:* \"15.03.2024 9-18\" или \"10:00-19:00\"\n"
@@ -538,7 +540,21 @@ async def delete_button(msg: types.Message, state: FSMContext):
 @dp.message(F.text == "📅 График")
 async def schedule_button(msg: types.Message):
     """Обработка кнопки графика"""
-    await show_schedule(msg)
+    try:
+        await msg.answer("🔄 Загружаю график смен...", reply_markup=ReplyKeyboardRemove())
+        await show_schedule(msg)
+    except Exception as e:
+        logger.error(f"❌ Error in schedule_button: {e}")
+        await msg.answer(
+            "❌ Не удалось загрузить график смен, котик! 😿\n"
+            "Попробуй еще раз или напиши разработчику! 🐾",
+            reply_markup=get_main_keyboard(msg.from_user.id)
+        )
+
+@dp.message(F.text == "📅 Неделя")
+async def week_button(msg: types.Message, state: FSMContext):
+    """Обработка кнопки добавления недели"""
+    await add_week_start(msg, state)
 
 @dp.message(F.text == "❌ Отмена")
 async def cancel_button(msg: types.Message, state: FSMContext):
@@ -803,16 +819,20 @@ async def process_delete_confirmation(msg: types.Message, state: FSMContext):
     
     await state.clear()
 
-# ПОКАЗ ГРАФИКА НА НЕДЕЛЮ
+# ПОКАЗ ГРАФИКА НА НЕДЕЛЮ - ИСПРАВЛЕННАЯ ВЕРСИЯ
 async def show_schedule(msg: types.Message):
     """Показать график смен на ближайшие дни"""
     try:
+        logger.info(f"🔄 Loading schedule for user: {msg.from_user.id}")
+        
         # Получаем все смены
         all_shifts = await get_all_shifts()
+        logger.info(f"📊 Retrieved {len(all_shifts) if all_shifts else 0} shifts from storage")
+        
         if not all_shifts:
             await msg.answer(
                 "📅 У тебя пока нет запланированных смен, котик! 🐾\n\n"
-                "Хочешь добавить первую смену? Нажми кнопку *📅 Добавить смену* или *📅 График* для планирования недели! 🌸",
+                "Хочешь добавить первую смену? Нажми кнопку *📅 Добавить смену* или *📅 Неделя* для планирования недели! 🌸",
                 parse_mode="Markdown",
                 reply_markup=get_main_keyboard(msg.from_user.id)
             )
@@ -823,19 +843,35 @@ async def show_schedule(msg: types.Message):
         start_date = today - timedelta(days=7)
         end_date = today + timedelta(days=14)
         
+        logger.info(f"📅 Filtering shifts from {start_date} to {end_date}")
+        
         relevant_shifts = []
+        skipped_shifts = 0
+        
         for shift in all_shifts:
             try:
+                if not shift or 'date' not in shift:
+                    skipped_shifts += 1
+                    continue
+                    
                 shift_date = datetime.strptime(shift['date'], "%d.%m.%Y").date()
                 if start_date <= shift_date <= end_date:
                     relevant_shifts.append(shift)
-            except ValueError:
+            except ValueError as e:
+                logger.warning(f"⚠️ Skipped shift with invalid date format: {shift.get('date')} - {e}")
+                skipped_shifts += 1
+                continue
+            except Exception as e:
+                logger.warning(f"⚠️ Error processing shift: {shift} - {e}")
+                skipped_shifts += 1
                 continue
         
+        logger.info(f"✅ Found {len(relevant_shifts)} relevant shifts, skipped {skipped_shifts}")
+
         if not relevant_shifts:
             await msg.answer(
                 "📅 В ближайшие дни у тебя нет запланированных смен, котик! 🐾\n\n"
-                "Хочешь добавить смены? Нажми кнопку *📅 Добавить смену* или *📅 График* для планирования недели! 🌸",
+                "Хочешь добавить смены? Нажми кнопку *📅 Добавить смену* или *📅 Неделя* для планирования недели! 🌸",
                 parse_mode="Markdown",
                 reply_markup=get_main_keyboard(msg.from_user.id)
             )
@@ -849,53 +885,94 @@ async def show_schedule(msg: types.Message):
         
         current_date = None
         for shift in relevant_shifts:
-            shift_date = datetime.strptime(shift['date'], "%d.%m.%Y").date()
-            
-            # Добавляем заголовок дня
-            if shift_date != current_date:
-                day_name = get_day_name(shift_date)
-                date_prefix = "🟢" if shift_date == today else ("🟡" if shift_date == today + timedelta(days=1) else "⚪️")
-                schedule_text += f"\n{date_prefix} *{day_name}, {shift['date']}*\n"
-                current_date = shift_date
-            
-            # Формируем информацию о смене
-            time_info = f"🕐 {shift['start']}-{shift['end']} ({shift['hours']}ч)"
-            
-            # Добавляем финансовую информацию если есть
-            financial_info = ""
-            if shift.get('revenue') and str(shift['revenue']).strip() and float(shift['revenue']) > 0:
-                financial_info += f" | 💰 {shift['revenue']}₽"
-            if shift.get('tips') and str(shift['tips']).strip() and float(shift['tips']) > 0:
-                financial_info += f" | 💖 {shift['tips']}₽"
-            if shift.get('profit') and str(shift['profit']).strip() and float(shift['profit']) > 0:
-                financial_info += f" | 📊 {shift['profit']}₽"
-            
-            schedule_text += f"   {time_info}{financial_info}\n"
+            try:
+                shift_date = datetime.strptime(shift['date'], "%d.%m.%Y").date()
+                
+                # Добавляем заголовок дня
+                if shift_date != current_date:
+                    day_name = get_day_name(shift_date)
+                    date_prefix = "🟢" if shift_date == today else ("🟡" if shift_date == today + timedelta(days=1) else "⚪️")
+                    schedule_text += f"\n{date_prefix} *{day_name}, {shift['date']}*\n"
+                    current_date = shift_date
+                
+                # Формируем информацию о смене
+                time_info = f"🕐 {shift.get('start', '?')}-{shift.get('end', '?')} ({shift.get('hours', '?')}ч)"
+                
+                # Добавляем финансовую информацию если есть
+                financial_info = ""
+                if shift.get('revenue') and str(shift['revenue']).strip() and shift['revenue'] not in ['0', '0.0', '']:
+                    try:
+                        revenue_val = float(shift['revenue'])
+                        if revenue_val > 0:
+                            financial_info += f" | 💰 {revenue_val:.0f}₽"
+                    except (ValueError, TypeError):
+                        pass
+                
+                if shift.get('tips') and str(shift['tips']).strip() and shift['tips'] not in ['0', '0.0', '']:
+                    try:
+                        tips_val = float(shift['tips'])
+                        if tips_val > 0:
+                            financial_info += f" | 💖 {tips_val:.0f}₽"
+                    except (ValueError, TypeError):
+                        pass
+                
+                if shift.get('profit') and str(shift['profit']).strip() and shift['profit'] not in ['0', '0.0', '']:
+                    try:
+                        profit_val = float(shift['profit'])
+                        if profit_val > 0:
+                            financial_info += f" | 📊 {profit_val:.0f}₽"
+                    except (ValueError, TypeError):
+                        pass
+                
+                schedule_text += f"   {time_info}{financial_info}\n"
+                
+            except Exception as e:
+                logger.error(f"❌ Error formatting shift {shift}: {e}")
+                continue
 
         schedule_text += f"\n📊 *Всего смен: {len(relevant_shifts)}*"
+        if skipped_shifts > 0:
+            schedule_text += f"\n⚠️ *Пропущено: {skipped_shifts}*"
         schedule_text += f"\n🌸 *Отличная работа, котик! Ты справишься!* 💪"
 
         # Если сообщение слишком длинное, разбиваем на части
         if len(schedule_text) > 4000:
-            parts = [schedule_text[i:i+4000] for i in range(0, len(schedule_text), 4000)]
-            for part in parts:
-                await msg.answer(part, parse_mode="Markdown")
+            parts = []
+            current_part = ""
+            for line in schedule_text.split('\n'):
+                if len(current_part + line + '\n') > 4000:
+                    parts.append(current_part)
+                    current_part = line + '\n'
+                else:
+                    current_part += line + '\n'
+            if current_part:
+                parts.append(current_part)
+            
+            for i, part in enumerate(parts):
+                if i == len(parts) - 1:
+                    await msg.answer(part, parse_mode="Markdown", reply_markup=get_main_keyboard(msg.from_user.id))
+                else:
+                    await msg.answer(part, parse_mode="Markdown")
                 await asyncio.sleep(0.5)
         else:
             await msg.answer(schedule_text, parse_mode="Markdown", reply_markup=get_main_keyboard(msg.from_user.id))
 
     except Exception as e:
-        logger.error(f"❌ Error showing schedule: {e}")
+        logger.error(f"❌ Error showing schedule: {e}", exc_info=True)
         await msg.answer(
             "❌ Не удалось загрузить график смен, котик! 😿\n"
-            "Попробуй еще раз или напиши разработчику! 🐾",
+            "Возможно, проблема с данными. Попробуй добавить новую смену или обратись к разработчику! 🐾",
             reply_markup=get_main_keyboard(msg.from_user.id)
         )
 
 def get_day_name(date_obj):
     """Получить название дня недели на русском"""
-    days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    return days[date_obj.weekday()]
+    try:
+        days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        return days[date_obj.weekday()]
+    except Exception as e:
+        logger.error(f"Error getting day name for {date_obj}: {e}")
+        return "День"
 
 # ДОБАВЛЕНИЕ ГРАФИКА НА НЕДЕЛЮ (доступно всем)
 @dp.message(Command("add_week"))
@@ -1598,6 +1675,31 @@ async def show_profit_result(msg: types.Message, date: str, profit_value: float)
         text = f"📊 Твоя прибыль за {date}: {profit_float:.2f}₽.\nТы просто суперстар 🌟 — ещё немного, и миллион твой! Горжусь тобой! 🎉"
     
     await msg.answer(text, reply_markup=get_main_keyboard(msg.from_user.id))
+
+# Команда для отладки графика
+@dp.message(Command("debug_schedule"))
+async def debug_schedule_cmd(msg: types.Message):
+    """Команда для отладки графика"""
+    if not is_admin(msg.from_user.id):
+        await msg.answer("❌ Эта команда только для администратора")
+        return
+        
+    try:
+        all_shifts = await get_all_shifts()
+        debug_info = f"🔧 *Отладочная информация:*\n\n"
+        debug_info += f"• Всего смен: {len(all_shifts) if all_shifts else 0}\n"
+        
+        if all_shifts:
+            # Покажем первые 3 смены для примера
+            for i, shift in enumerate(all_shifts[:3]):
+                debug_info += f"\n*Смена {i+1}:*\n"
+                for key, value in shift.items():
+                    debug_info += f"  {key}: {value}\n"
+        
+        await msg.answer(debug_info, parse_mode="Markdown")
+        
+    except Exception as e:
+        await msg.answer(f"❌ Ошибка отладки: {e}")
 
 @dp.message()
 async def echo(message: types.Message):
