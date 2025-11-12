@@ -393,6 +393,40 @@ class GoogleSheetsManager:
         """Check if shift exists for given date (for notifications)"""
         return await self.check_shift_exists(date_msg)
 
+    async def get_shift_data(self, date_msg):
+        """Get complete shift data for a specific date (for notifications)"""
+        if not self.initialized:
+            logger.error("Google Sheets not initialized")
+            return None
+
+        try:
+            date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
+            formatted_date = date_obj.strftime("%d.%m.%Y")
+            
+            cell = await asyncio.to_thread(self.worksheet.find, formatted_date)
+            if not cell:
+                return None
+
+            row = cell.row
+            row_values = await self._get_row_values(row)
+            
+            return {
+                'date': row_values['date'],
+                'start': row_values['start'],
+                'end': row_values['end'],
+                'hours': row_values['hours'],
+                'revenue': row_values['revenue'],
+                'tips': row_values['tips'],
+                'profit': row_values['profit'],
+                'is_complete': bool(row_values['revenue'] and row_values['tips'] and 
+                                  str(row_values['revenue']).strip() != '' and 
+                                  str(row_values['tips']).strip() != '')
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting shift data: {e}")
+            return None
+
     async def get_all_shifts(self):
         """Get all shifts from spreadsheet (for future statistics)"""
         if not self.initialized:
@@ -439,10 +473,14 @@ async def get_profit(date_msg):
 async def check_shift_exists(date_msg):
     return await sheets_manager.check_shift_exists(date_msg)
 
-# New function for notifications
+# New functions for notifications
 async def has_shift_today(date_msg):
     """Check if shift exists for today (for notifications)"""
     return await sheets_manager.has_shift_today(date_msg)
+
+async def get_shift_data(date_msg):
+    """Get complete shift data for a specific date (for notifications)"""
+    return await sheets_manager.get_shift_data(date_msg)
 
 # Additional function for future statistics
 async def get_all_shifts():
