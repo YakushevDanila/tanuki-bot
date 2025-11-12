@@ -101,10 +101,10 @@ class GoogleSheetsManager:
     def _calculate_profit(self, hours, revenue, tips):
         """Calculate profit using formula: (hours * 220) + tips + (revenue * 0.015)"""
         try:
-            # Convert to numbers
-            hours_val = float(hours) if hours else 0
-            revenue_val = float(str(revenue).replace(',', '.')) if revenue else 0
-            tips_val = float(str(tips).replace(',', '.')) if tips else 0
+            # Convert to numbers, handling empty strings and commas
+            hours_val = float(hours) if hours and str(hours).strip() != '' else 0
+            revenue_val = float(str(revenue).replace(',', '.')) if revenue and str(revenue).strip() != '' else 0
+            tips_val = float(str(tips).replace(',', '.')) if tips and str(tips).strip() != '' else 0
             
             hourly_rate = 220
             revenue_percentage = 0.015
@@ -114,7 +114,34 @@ class GoogleSheetsManager:
             return round(profit, 2)
         except Exception as e:
             logger.error(f"❌ Error calculating profit: {e}")
+            logger.error(f"❌ Values: hours='{hours}', revenue='{revenue}', tips='{tips}'")
             return 0
+
+    async def _get_row_values(self, row):
+        """Get all values from a row with proper error handling"""
+        try:
+            # Get the entire row to ensure we have all values
+            row_data = await asyncio.to_thread(self.worksheet.row_values, row)
+            
+            # Ensure we have at least 7 columns
+            while len(row_data) < 7:
+                row_data.append('')
+            
+            return {
+                'date': row_data[0] if len(row_data) > 0 else '',
+                'start': row_data[1] if len(row_data) > 1 else '',
+                'end': row_data[2] if len(row_data) > 2 else '',
+                'hours': row_data[3] if len(row_data) > 3 else '',
+                'revenue': row_data[4] if len(row_data) > 4 else '',
+                'tips': row_data[5] if len(row_data) > 5 else '',
+                'profit': row_data[6] if len(row_data) > 6 else ''
+            }
+        except Exception as e:
+            logger.error(f"❌ Error getting row values: {e}")
+            return {
+                'date': '', 'start': '', 'end': '', 'hours': '', 
+                'revenue': '', 'tips': '', 'profit': ''
+            }
 
     async def add_shift(self, date_msg, start, end):
         """Add shift to spreadsheet"""
@@ -147,14 +174,10 @@ class GoogleSheetsManager:
                         value_input_option=ValueInputOption.user_entered
                     )
                     
-                    # Recalculate profit
-                    revenue_cell = await asyncio.to_thread(self.worksheet.cell, row, 5)  # E: выручка
-                    tips_cell = await asyncio.to_thread(self.worksheet.cell, row, 6)     # F: чаевые
+                    # Get current values for profit calculation
+                    row_values = await self._get_row_values(row)
                     
-                    revenue = revenue_cell.value if revenue_cell.value else "0"
-                    tips = tips_cell.value if tips_cell.value else "0"
-                    
-                    profit = self._calculate_profit(hours, revenue, tips)
+                    profit = self._calculate_profit(hours, row_values['revenue'], row_values['tips'])
                     await asyncio.to_thread(
                         self.worksheet.update,
                         f'G{row}',  # G: прибыль
@@ -205,6 +228,10 @@ class GoogleSheetsManager:
 
             row = cell.row
             
+            # Get current values BEFORE update
+            row_values = await self._get_row_values(row)
+            logger.info(f"📊 Current values before update: {row_values}")
+            
             # Mapping fields to columns
             column_mapping = {
                 'начало': 'B',    # Начало
@@ -218,6 +245,7 @@ class GoogleSheetsManager:
                 logger.error(f"Unknown field: {field}")
                 return False
 
+            # Update the field
             await asyncio.to_thread(
                 self.worksheet.update,
                 f'{column}{row}',
@@ -225,30 +253,44 @@ class GoogleSheetsManager:
                 value_input_option=ValueInputOption.user_entered
             )
             
-            # Recalculate hours if start or end time changed
+            # If start or end time changed, recalculate hours
             if field.lower() in ['начало', 'конец']:
-                start_cell = await asyncio.to_thread(self.worksheet.cell, row, 2)  # B: начало
-                end_cell = await asyncio.to_thread(self.worksheet.cell, row, 3)    # C: конец
+                # Get updated values
+                updated_values = await self._get_row_values(row)
                 
-                start_time = start_cell.value if start_cell.value else "00:00"
-                end_time = end_cell.value if end_cell.value else "00:00"
+                start_time = updated_values['start'] if field.lower() != 'начало' else value
+                end_time = updated_values['end'] if field.lower() != 'конец' else value
                 
-                hours = self._calculate_hours(start_time, end_time)
-                await asyncio.to_thread(
-                    self.worksheet.update,
-                    f'D{row}',  # D: часы
-                    [[hours]],
-                    value_input_option=ValueInputOption.user_entered
-                )
+                if start_time and end_time:
+                    hours = self._calculate_hours(start_time, end_time)
+                    await asyncio.to_thread(
+                        self.worksheet.update,
+                        f'D{row}',  # D: часы
+                        [[hours]],
+                        value_input_option=ValueInputOption.user_entered
+                    )
+                    logger.info(f"🔄 Recalculated hours: {hours} from {start_time} to {end_time}")
+                else:
+                    hours = updated_values['hours']
+            else:
+                # For revenue or tips, use existing hours
+                hours = row_values['hours']
             
-            # Get current values for profit calculation
-            hours_cell = await asyncio.to_thread(self.worksheet.cell, row, 4)  # D: часы
-            revenue_cell = await asyncio.to_thread(self.worksheet.cell, row, 5) # E: выручка
-            tips_cell = await asyncio.to_thread(self.worksheet.cell, row, 6)   # F: чаевые
+            # Get updated values for profit calculation
+            updated_values = await self._get_row_values(row)
             
-            hours = hours_cell.value if hours_cell.value else "0"
-            revenue = revenue_cell.value if revenue_cell.value else "0"
-            tips = tips_cell.value if tips_cell.value else "0"
+            # Use the updated value for the field we just changed
+            if field.lower() == 'выручка':
+                revenue = value
+                tips = updated_values['tips']
+            elif field.lower() == 'чай':
+                revenue = updated_values['revenue']
+                tips = value
+            else:
+                revenue = updated_values['revenue']
+                tips = updated_values['tips']
+            
+            logger.info(f"📊 Values for profit calculation: hours={hours}, revenue={revenue}, tips={tips}")
             
             profit = self._calculate_profit(hours, revenue, tips)
             await asyncio.to_thread(
@@ -281,33 +323,42 @@ class GoogleSheetsManager:
 
             row = cell.row
             
-            # Get all values from correct columns
-            hours_cell = await asyncio.to_thread(self.worksheet.cell, row, 4)  # D: часы
-            revenue_cell = await asyncio.to_thread(self.worksheet.cell, row, 5) # E: выручка
-            tips_cell = await asyncio.to_thread(self.worksheet.cell, row, 6)   # F: чаевые
-            profit_cell = await asyncio.to_thread(self.worksheet.cell, row, 7) # G: прибыль
+            # Get all values using our helper function
+            row_values = await self._get_row_values(row)
             
-            hours = hours_cell.value if hours_cell.value else "0"
-            revenue = revenue_cell.value if revenue_cell.value else "0"
-            tips = tips_cell.value if tips_cell.value else "0"
-            existing_profit = profit_cell.value if profit_cell.value else "0"
+            hours = row_values['hours']
+            revenue = row_values['revenue']
+            tips = row_values['tips']
+            existing_profit = row_values['profit']
+            
+            logger.info(f"📊 Values for profit get: hours='{hours}', revenue='{revenue}', tips='{tips}'")
             
             # Calculate profit using new formula
             profit = self._calculate_profit(hours, revenue, tips)
             
             # Update profit cell if different
             try:
-                existing_profit_float = float(str(existing_profit).replace(',', '.'))
-                if abs(existing_profit_float - profit) > 0.01:
+                if existing_profit and str(existing_profit).strip() != '':
+                    existing_profit_float = float(str(existing_profit).replace(',', '.'))
+                    if abs(existing_profit_float - profit) > 0.01:
+                        await asyncio.to_thread(
+                            self.worksheet.update,
+                            f'G{row}',  # G: прибыль
+                            [[profit]],
+                            value_input_option=ValueInputOption.user_entered
+                        )
+                        logger.info(f"📝 Updated profit calculation for {formatted_date}: {profit}")
+                else:
+                    # If no existing profit, set it
                     await asyncio.to_thread(
                         self.worksheet.update,
-                        f'G{row}',  # G: прибыль
+                        f'G{row}',
                         [[profit]],
                         value_input_option=ValueInputOption.user_entered
                     )
-                    logger.info(f"📝 Updated profit calculation for {formatted_date}: {profit}")
-            except ValueError:
-                # If existing profit is not a number, update it
+            except ValueError as e:
+                logger.error(f"❌ Error comparing profits: {e}")
+                # Update anyway
                 await asyncio.to_thread(
                     self.worksheet.update,
                     f'G{row}',
