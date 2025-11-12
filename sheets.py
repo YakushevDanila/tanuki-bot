@@ -98,13 +98,26 @@ class GoogleSheetsManager:
             logger.error(f"❌ Error calculating hours: {e}")
             return 0
 
+    def _parse_number(self, value):
+        """Parse number from string with various formats"""
+        if not value or str(value).strip() == '':
+            return 0.0
+        
+        try:
+            # Remove spaces and replace commas with dots
+            cleaned = str(value).replace(' ', '').replace(',', '.')
+            return float(cleaned)
+        except (ValueError, TypeError):
+            logger.warning(f"⚠️ Could not parse number: {value}")
+            return 0.0
+
     def _calculate_profit(self, hours, revenue, tips):
         """Calculate profit using formula: (hours * 220) + tips + (revenue * 0.015)"""
         try:
-            # Convert to numbers, handling empty strings and commas
-            hours_val = float(hours) if hours and str(hours).strip() != '' else 0
-            revenue_val = float(str(revenue).replace(',', '.')) if revenue and str(revenue).strip() != '' else 0
-            tips_val = float(str(tips).replace(',', '.')) if tips and str(tips).strip() != '' else 0
+            # Parse numbers safely
+            hours_val = self._parse_number(hours)
+            revenue_val = self._parse_number(revenue)
+            tips_val = self._parse_number(tips)
             
             hourly_rate = 220
             revenue_percentage = 0.015
@@ -170,7 +183,6 @@ class GoogleSheetsManager:
                     
                     if reset_financials:
                         # Полностью перезаписываем строку с обнулением финансовых данных
-                        # НО НЕ РАССЧИТЫВАЕМ ПРИБЫЛЬ - она будет рассчитана позже при вводе данных
                         new_row = [formatted_date, start, end, hours, '', '', '']
                         await asyncio.to_thread(
                             self.worksheet.update,
@@ -180,7 +192,7 @@ class GoogleSheetsManager:
                         )
                         logger.info(f"📝 Updated existing shift with financial reset: {formatted_date}, hours: {hours}")
                     else:
-                        # Обновляем только время и часы (старая логика)
+                        # Обновляем только время и часы
                         await asyncio.to_thread(
                             self.worksheet.update,
                             f'B{row}:D{row}',
@@ -270,6 +282,7 @@ class GoogleSheetsManager:
             )
             
             # Get updated values for profit calculation
+            await asyncio.sleep(0.5)  # Small delay to ensure update is processed
             updated_values = await self._get_row_values(row)
             
             # Use the updated value for the field we just changed
@@ -334,15 +347,7 @@ class GoogleSheetsManager:
             # Calculate profit using current formula and values
             profit = self._calculate_profit(hours, revenue, tips)
             
-            # Always update profit cell to ensure it's correct
-            await asyncio.to_thread(
-                self.worksheet.update,
-                f'G{row}',
-                [[profit]],
-                value_input_option=ValueInputOption.user_entered
-            )
-            
-            logger.info(f"📝 Updated profit calculation for {formatted_date}: {profit}")
+            logger.info(f"📊 Profit calculation result: {profit}")
             
             return str(profit)
                 
@@ -365,6 +370,32 @@ class GoogleSheetsManager:
             
         except Exception as e:
             logger.error(f"❌ Error checking shift existence: {e}")
+            return False
+
+    async def delete_shift(self, date_msg):
+        """Delete shift by date"""
+        if not self.initialized:
+            logger.error("Google Sheets not initialized")
+            return False
+
+        try:
+            date_obj = datetime.strptime(date_msg, "%d.%m.%Y").date()
+            formatted_date = date_obj.strftime("%d.%m.%Y")
+            
+            cell = await asyncio.to_thread(self.worksheet.find, formatted_date)
+            if not cell:
+                logger.warning(f"Shift not found for deletion: {formatted_date}")
+                return False
+
+            row = cell.row
+            
+            # Delete the entire row
+            await asyncio.to_thread(self.worksheet.delete_rows, row)
+            logger.info(f"✅ Deleted shift: {formatted_date}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error deleting shift: {e}")
             return False
 
     async def has_shift_today(self, date_msg):
@@ -450,6 +481,10 @@ async def get_profit(date_msg):
 
 async def check_shift_exists(date_msg):
     return await sheets_manager.check_shift_exists(date_msg)
+
+# New function for deleting shifts
+async def delete_shift(date_msg):
+    return await sheets_manager.delete_shift(date_msg)
 
 # New functions for notifications
 async def has_shift_today(date_msg):
