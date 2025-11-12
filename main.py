@@ -47,61 +47,32 @@ def is_admin(user_id: int) -> bool:
 
 def get_main_keyboard(user_id: int):
     """Основная клавиатура в зависимости от прав пользователя"""
-    if is_admin(user_id):
-        # Клавиатура для администратора
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[
-                [
-                    KeyboardButton(text="📅 Добавить смену"), 
-                    KeyboardButton(text="💰 Выручка")
-                ],
-                [
-                    KeyboardButton(text="💖 Чаевые"), 
-                    KeyboardButton(text="📊 Прибыль")
-                ],
-                [
-                    KeyboardButton(text="🎯 Сегодня"), 
-                    KeyboardButton(text="📈 Статистика")
-                ],
-                [
-                    KeyboardButton(text="🔄 Изменить"), 
-                    KeyboardButton(text="📤 Экспорт")
-                ],
-                [
-                    KeyboardButton(text="🌙 Неделя"), 
-                    KeyboardButton(text="🗑️ Удалить")
-                ],
-                [
-                    KeyboardButton(text="🌸 Помощь")
-                ]
+    # Теперь у всех пользователей одинаковые права
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="📅 Добавить смену"), 
+                KeyboardButton(text="💰 Выручка")
             ],
-            resize_keyboard=True,
-            input_field_placeholder="Выберите действие..."
-        )
-    else:
-        # Клавиатура для обычного пользователя
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[
-                [
-                    KeyboardButton(text="📅 Добавить смену"), 
-                    KeyboardButton(text="💰 Выручка")
-                ],
-                [
-                    KeyboardButton(text="💖 Чаевые"), 
-                    KeyboardButton(text="📊 Прибыль")
-                ],
-                [
-                    KeyboardButton(text="🎯 Сегодня"), 
-                    KeyboardButton(text="🔄 Изменить")
-                ],
-                [
-                    KeyboardButton(text="🗑️ Удалить"),
-                    KeyboardButton(text="🌸 Помощь")
-                ]
+            [
+                KeyboardButton(text="💖 Чаевые"), 
+                KeyboardButton(text="📊 Прибыль")
             ],
-            resize_keyboard=True,
-            input_field_placeholder="Выберите действие..."
-        )
+            [
+                KeyboardButton(text="🎯 Сегодня"), 
+                KeyboardButton(text="🔄 Изменить")
+            ],
+            [
+                KeyboardButton(text="🗑️ Удалить"),
+                KeyboardButton(text="📅 График")
+            ],
+            [
+                KeyboardButton(text="🌸 Помощь")
+            ]
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Выберите действие..."
+    )
     return keyboard
 
 def get_onboarding_keyboard():
@@ -161,6 +132,18 @@ def get_delete_confirmation_keyboard():
         keyboard=[
             [
                 KeyboardButton(text="✅ Да, удалить"), 
+                KeyboardButton(text="❌ Нет, отмена")
+            ]
+        ],
+        resize_keyboard=True
+    )
+
+def get_week_confirmation_keyboard():
+    """Клавиатура для подтверждения добавления недели"""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="✅ Да, добавить"), 
                 KeyboardButton(text="❌ Нет, отмена")
             ]
         ],
@@ -235,10 +218,6 @@ class Form(StatesGroup):
     waiting_for_edit_value = State()
     waiting_for_profit_date = State()
     waiting_for_overwrite_confirm = State()
-    waiting_for_stats_start = State()
-    waiting_for_stats_end = State()
-    waiting_for_export_start = State()
-    waiting_for_export_end = State()
     waiting_for_week_schedule = State()
     waiting_for_week_confirmation = State()
     waiting_for_quick_today = State()
@@ -254,7 +233,7 @@ storage_type = os.getenv('STORAGE_TYPE', 'google_sheets').lower()
 
 if storage_type == 'google_sheets':
     try:
-        from sheets import add_shift, update_value, get_profit, check_shift_exists, delete_shift, get_shift_data
+        from sheets import add_shift, update_value, get_profit, check_shift_exists, delete_shift, get_shift_data, get_all_shifts
         logger.info("✅ Using Google Sheets storage")
     except Exception as e:
         logger.error(f"❌ Failed to use Google Sheets: {e}")
@@ -267,6 +246,7 @@ if storage_type == 'google_sheets':
             check_shift_exists = storage.check_shift_exists
             delete_shift = storage.delete_shift
             get_shift_data = storage.get_shift_data
+            get_all_shifts = storage.get_all_shifts
             logger.info("✅ Fallback to SQLite storage")
         except ImportError:
             logger.error("❌ No storage backend available")
@@ -279,13 +259,8 @@ else:
     check_shift_exists = storage.check_shift_exists
     delete_shift = storage.delete_shift
     get_shift_data = storage.get_shift_data
+    get_all_shifts = storage.get_all_shifts
     logger.info("✅ Using SQLite storage")
-
-# Импортируем функции для статистики и экспорта (только для SQLite)
-try:
-    from database import db_manager
-except ImportError:
-    db_manager = None
 
 # ВРЕМЕННО ОТКЛЮЧАЕМ ПРОВЕРКУ ДОСТУПА
 def check_access(message: types.Message):
@@ -348,7 +323,9 @@ async def detailed_onboarding(msg: types.Message, state: FSMContext):
         "✨ *📊 Прибыль*\n"
         "Узнай сколько ты заработала за любой день\n\n"
         "✨ *🗑️ Удалить*\n"
-        "Удали ошибочную смену (будь осторожна! ❤️)"
+        "Удали ошибочную смену (будь осторожна! ❤️)\n\n"
+        "✨ *📅 График*\n"
+        "Посмотри все запланированные смены на неделю"
     )
     await msg.answer(step1_text, parse_mode="Markdown")
     await asyncio.sleep(2)
@@ -360,29 +337,20 @@ async def detailed_onboarding(msg: types.Message, state: FSMContext):
         "Быстрый ввод всего за 2 шага! Идеально после рабочего дня\n\n"
         "🔄 *🔄 Изменить*\n"
         "Ошиблась? Не беда! Можешь исправить любые данные\n\n"
+        "📅 *📅 График на неделю*\n"
+        "Добавь сразу все рабочие дни одним сообщением!\n\n"
         "💫 *Авторасчет прибыли*\n"
         "Я сама посчитаю: (часы × 220) + чаевые + (выручка × 0.015)"
     )
     await msg.answer(step2_text, parse_mode="Markdown")
     await asyncio.sleep(2)
     
-    # Шаг 3: Для администратора (если нужно)
-    if is_admin(msg.from_user.id):
-        step3_text = (
-            "👑 *ДОПОЛНИТЕЛЬНО ДЛЯ АДМИНА:*\n\n"
-            "📈 *Статистика* - полная аналитика за любой период\n"
-            "📤 *Экспорт* - выгрузка всех данных\n"
-            "🌙 *Неделя* - планирование смен на всю неделю\n"
-            "🔔 *Уведомления* - напоминания о сменах"
-        )
-        await msg.answer(step3_text, parse_mode="Markdown")
-        await asyncio.sleep(2)
-    
     # Финальное сообщение
     final_text = (
         "🎉 *Вот и все! Теперь ты знаешь все мои секреты!*\n\n"
         "💡 *Советы для начала:*\n"
         "• Начни с кнопки *🎯 Сегодня* - это самый быстрый способ\n"
+        "• Используй *📅 График* для планирования недели\n"
         "• Не переживай об ошибках - всё можно исправить\n"
         "• Данные сохраняются автоматически\n"
         "• Я всегда готова помочь! 🐾\n\n"
@@ -481,7 +449,8 @@ async def help_cmd(msg: types.Message):
         "• *📊 Прибыль* - узнать заработок за день\n"
         "• *🎯 Сегодня* - быстрый ввод за сегодня\n"
         "• *🔄 Изменить* - исправить данные\n"
-        "• *🗑️ Удалить* - удалить смену (осторожно!)\n\n"
+        "• *🗑️ Удалить* - удалить смену (осторожно!)\n"
+        "• *📅 График* - посмотреть смены на неделю\n\n"
         
         "💫 *ПРИМЕРЫ ИСПОЛЬЗОВАНИЯ:*\n"
         "• *Добавить смену:* \"15.03.2024 9-18\" или \"10:00-19:00\"\n"
@@ -566,29 +535,10 @@ async def delete_button(msg: types.Message, state: FSMContext):
     )
     await state.set_state(Form.waiting_for_delete_date)
 
-@dp.message(F.text == "📈 Статистика")
-async def stats_button(msg: types.Message, state: FSMContext):
-    """Обработка кнопки статистики"""
-    if not is_admin(msg.from_user.id):
-        await msg.answer("❌ Эта функция доступна только администратору, котик! 🐾")
-        return
-    await stats_start(msg, state)
-
-@dp.message(F.text == "📤 Экспорт")
-async def export_button(msg: types.Message, state: FSMContext):
-    """Обработка кнопки экспорта"""
-    if not is_admin(msg.from_user.id):
-        await msg.answer("❌ Эта функция доступна только администратору, котик! 🐾")
-        return
-    await export_start(msg, state)
-
-@dp.message(F.text == "🌙 Неделя")
-async def week_button(msg: types.Message, state: FSMContext):
-    """Обработка кнопки добавления недели"""
-    if not is_admin(msg.from_user.id):
-        await msg.answer("❌ Эта функция доступна только администратору, котик! 🐾")
-        return
-    await add_week_start(msg, state)
+@dp.message(F.text == "📅 График")
+async def schedule_button(msg: types.Message):
+    """Обработка кнопки графика"""
+    await show_schedule(msg)
 
 @dp.message(F.text == "❌ Отмена")
 async def cancel_button(msg: types.Message, state: FSMContext):
@@ -853,6 +803,277 @@ async def process_delete_confirmation(msg: types.Message, state: FSMContext):
     
     await state.clear()
 
+# ПОКАЗ ГРАФИКА НА НЕДЕЛЮ
+async def show_schedule(msg: types.Message):
+    """Показать график смен на ближайшие дни"""
+    try:
+        # Получаем все смены
+        all_shifts = await get_all_shifts()
+        if not all_shifts:
+            await msg.answer(
+                "📅 У тебя пока нет запланированных смен, котик! 🐾\n\n"
+                "Хочешь добавить первую смену? Нажми кнопку *📅 Добавить смену* или *📅 График* для планирования недели! 🌸",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard(msg.from_user.id)
+            )
+            return
+
+        # Фильтруем смены за последние 7 дней и следующие 14 дней
+        today = datetime.now().date()
+        start_date = today - timedelta(days=7)
+        end_date = today + timedelta(days=14)
+        
+        relevant_shifts = []
+        for shift in all_shifts:
+            try:
+                shift_date = datetime.strptime(shift['date'], "%d.%m.%Y").date()
+                if start_date <= shift_date <= end_date:
+                    relevant_shifts.append(shift)
+            except ValueError:
+                continue
+        
+        if not relevant_shifts:
+            await msg.answer(
+                "📅 В ближайшие дни у тебя нет запланированных смен, котик! 🐾\n\n"
+                "Хочешь добавить смены? Нажми кнопку *📅 Добавить смену* или *📅 График* для планирования недели! 🌸",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard(msg.from_user.id)
+            )
+            return
+
+        # Сортируем смены по дате
+        relevant_shifts.sort(key=lambda x: datetime.strptime(x['date'], "%d.%m.%Y"))
+
+        # Формируем сообщение
+        schedule_text = "📅 *Твой график смен:*\n\n"
+        
+        current_date = None
+        for shift in relevant_shifts:
+            shift_date = datetime.strptime(shift['date'], "%d.%m.%Y").date()
+            
+            # Добавляем заголовок дня
+            if shift_date != current_date:
+                day_name = get_day_name(shift_date)
+                date_prefix = "🟢" if shift_date == today else ("🟡" if shift_date == today + timedelta(days=1) else "⚪️")
+                schedule_text += f"\n{date_prefix} *{day_name}, {shift['date']}*\n"
+                current_date = shift_date
+            
+            # Формируем информацию о смене
+            time_info = f"🕐 {shift['start']}-{shift['end']} ({shift['hours']}ч)"
+            
+            # Добавляем финансовую информацию если есть
+            financial_info = ""
+            if shift.get('revenue') and str(shift['revenue']).strip() and float(shift['revenue']) > 0:
+                financial_info += f" | 💰 {shift['revenue']}₽"
+            if shift.get('tips') and str(shift['tips']).strip() and float(shift['tips']) > 0:
+                financial_info += f" | 💖 {shift['tips']}₽"
+            if shift.get('profit') and str(shift['profit']).strip() and float(shift['profit']) > 0:
+                financial_info += f" | 📊 {shift['profit']}₽"
+            
+            schedule_text += f"   {time_info}{financial_info}\n"
+
+        schedule_text += f"\n📊 *Всего смен: {len(relevant_shifts)}*"
+        schedule_text += f"\n🌸 *Отличная работа, котик! Ты справишься!* 💪"
+
+        # Если сообщение слишком длинное, разбиваем на части
+        if len(schedule_text) > 4000:
+            parts = [schedule_text[i:i+4000] for i in range(0, len(schedule_text), 4000)]
+            for part in parts:
+                await msg.answer(part, parse_mode="Markdown")
+                await asyncio.sleep(0.5)
+        else:
+            await msg.answer(schedule_text, parse_mode="Markdown", reply_markup=get_main_keyboard(msg.from_user.id))
+
+    except Exception as e:
+        logger.error(f"❌ Error showing schedule: {e}")
+        await msg.answer(
+            "❌ Не удалось загрузить график смен, котик! 😿\n"
+            "Попробуй еще раз или напиши разработчику! 🐾",
+            reply_markup=get_main_keyboard(msg.from_user.id)
+        )
+
+def get_day_name(date_obj):
+    """Получить название дня недели на русском"""
+    days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    return days[date_obj.weekday()]
+
+# ДОБАВЛЕНИЕ ГРАФИКА НА НЕДЕЛЮ (доступно всем)
+@dp.message(Command("add_week"))
+async def add_week_start(msg: types.Message, state: FSMContext):
+    """Начало пакетного добавления смен на неделю"""
+    if not check_access(msg): return
+    
+    # Получаем даты текущей недели
+    today = datetime.now().date()
+    start_of_week = today - timedelta(days=today.weekday())  # Понедельник
+    end_of_week = start_of_week + timedelta(days=6)  # Воскресенье
+    
+    week_dates = []
+    current_date = start_of_week
+    while current_date <= end_of_week:
+        week_dates.append(current_date.strftime("%d.%m.%Y"))
+        current_date += timedelta(days=1)
+    
+    await state.update_data(week_dates=week_dates)
+    
+    await msg.answer(
+        f"📅 **Планирование недели:**\n"
+        f"Период: {week_dates[0]} - {week_dates[-1]}\n\n"
+        f"Введи время смен в формате:\n"
+        f"<начало>-<конец>\n\n"
+        f"*Примеры:*\n"
+        f"• 9-18\n"
+        f"• 10:00-19:00\n"
+        f"• 0900-1800\n\n"
+        f"Это время будет установлено для всех рабочих дней недели! 🚀",
+        parse_mode="Markdown",
+        reply_markup=get_cancel_keyboard()
+    )
+    await state.set_state(Form.waiting_for_week_schedule)
+
+@dp.message(Form.waiting_for_week_schedule)
+async def process_week_schedule(msg: types.Message, state: FSMContext):
+    """Обработка ввода времени для пакетного добавления"""
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    time_input = msg.text.strip()
+    
+    # Парсим время с улучшенной обработкой разных форматов
+    time_parts = await parse_flexible_time(time_input)
+    if not time_parts:
+        await msg.answer(
+            "❌ Неверный формат времени, котик!\n"
+            "Используй: начало-конец\n"
+            "Пример: 9-18, 10:00-19:00",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+    
+    start_time, end_time = time_parts
+    
+    # Проверяем валидность времени
+    try:
+        datetime.strptime(start_time, "%H:%M")
+        datetime.strptime(end_time, "%H:%M")
+    except ValueError:
+        await msg.answer(
+            "❌ Неверный формат времени, пушистик!\n"
+            "Используй ЧЧ:ММ, например: 09:00-18:00",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+    
+    user_data = await state.get_data()
+    week_dates = user_data['week_dates']
+    
+    # Проверяем существующие смены
+    existing_shifts = []
+    new_shifts = []
+    
+    for date_str in week_dates:
+        if await check_shift_exists(date_str):
+            existing_shifts.append(date_str)
+        else:
+            new_shifts.append(date_str)
+    
+    # Сохраняем данные для подтверждения
+    await state.update_data(
+        start_time=start_time,
+        end_time=end_time,
+        new_shifts=new_shifts,
+        existing_shifts=existing_shifts
+    )
+    
+    # Формируем сообщение для подтверждения
+    confirmation_text = f"📋 **Будут добавлены смены:**\n"
+    confirmation_text += f"Время: {start_time}-{end_time}\n\n"
+    
+    if new_shifts:
+        confirmation_text += f"✅ *Новые смены ({len(new_shifts)}):*\n"
+        for date in new_shifts:
+            day_name = get_day_name(datetime.strptime(date, "%d.%m.%Y").date())
+            confirmation_text += f"• {day_name}, {date}\n"
+    
+    if existing_shifts:
+        confirmation_text += f"\n⚠️ *Уже существуют ({len(existing_shifts)}):*\n"
+        for date in existing_shifts[:3]:  # Показываем только первые 3
+            day_name = get_day_name(datetime.strptime(date, "%d.%m.%Y").date())
+            confirmation_text += f"• {day_name}, {date}\n"
+        if len(existing_shifts) > 3:
+            confirmation_text += f"• ... и ещё {len(existing_shifts) - 3}\n"
+        
+        confirmation_text += "\n*Существующие смены будут перезаписаны!*"
+    
+    confirmation_text += "\n\n*Добавляем смены на неделю, котик?* 🐾"
+    
+    await msg.answer(confirmation_text, parse_mode="Markdown", reply_markup=get_week_confirmation_keyboard())
+    await state.set_state(Form.waiting_for_week_confirmation)
+
+@dp.message(Form.waiting_for_week_confirmation)
+async def process_week_confirmation(msg: types.Message, state: FSMContext):
+    """Обработка подтверждения пакетного добавления"""
+    # Расширенная проверка ответов для ДА
+    yes_responses = ['да', 'yes', 'y', 'д', 'ДА', 'Да', 'дА', 'lf', 'LF', 'Lf', 'конечно', 'ага', 'угу']
+    # Расширенная проверка ответов для НЕТ  
+    no_responses = ['нет', 'no', 'n', 'н', 'НЕТ', 'Нет', 'нЕТ', 'ytn', 'YTN', 'Ytn', 'не', 'отмена']
+    
+    user_response = clean_user_input(msg.text).lower()
+    
+    if user_response in yes_responses:
+        user_data = await state.get_data()
+        start_time = user_data['start_time']
+        end_time = user_data['end_time']
+        new_shifts = user_data['new_shifts']
+        existing_shifts = user_data['existing_shifts']
+        
+        # Добавляем смены
+        added_count = 0
+        for date_str in new_shifts:
+            success = await add_shift(date_str, start_time, end_time)
+            if success:
+                added_count += 1
+            await asyncio.sleep(0.1)  # Небольшая задержка между запросами
+        
+        # Перезаписываем существующие смены
+        overwritten_count = 0
+        for date_str in existing_shifts:
+            success = await add_shift(date_str, start_time, end_time, reset_financials=True)
+            if success:
+                overwritten_count += 1
+            await asyncio.sleep(0.1)
+        
+        # Формируем отчет
+        report_text = f"✅ **Планирование недели завершено!** 🎉\n\n"
+        report_text += f"📊 *Статистика:*\n"
+        report_text += f"• Добавлено смен: {added_count} 🌸\n"
+        report_text += f"• Перезаписано: {overwritten_count} ✨\n"
+        report_text += f"• Всего обработано: {added_count + overwritten_count} 🐾\n"
+        report_text += f"• Время: {start_time}-{end_time} 🕐\n"
+        
+        if added_count + overwritten_count > 0:
+            report_text += f"\n🎉 *Отличная работа! Неделя распланирована!* 🌟\n"
+            report_text += f"Теперь можешь посмотреть график в разделе *📅 График*!"
+        else:
+            report_text += f"\nℹ️ Все смены на эту неделю уже добавлены, умничка! 💖"
+        
+        await msg.answer(report_text, parse_mode="Markdown", reply_markup=get_main_keyboard(msg.from_user.id))
+        
+    elif user_response in no_responses:
+        await cancel_action(msg, state, "❌ Планирование недели отменено, котик!")
+    else:
+        await msg.answer(
+            "Пожалуйста, ответь *Да* или *Нет*, пушистик! 🌸\n\n"
+            "*Примеры ответов:*\n"
+            "• Да, конечно, ага, угу ✅\n"  
+            "• Нет, не надо, отмена ❌",
+            parse_mode="Markdown",
+            reply_markup=get_week_confirmation_keyboard()
+        )
+    
+    await state.clear()
+
 # Основные flow функции (адаптированные под новую систему)
 async def quick_today_start(msg: types.Message, state: FSMContext):
     """Быстрый ввод данных за сегодня"""
@@ -1040,9 +1261,14 @@ async def process_overwrite_confirm(msg: types.Message, state: FSMContext):
         await cancel_action(msg, state)
         return
         
+    # Расширенная проверка ответов для ДА
+    yes_responses = ['да', 'yes', 'y', 'д', 'ДА', 'Да', 'дА', 'lf', 'LF', 'Lf', 'конечно', 'ага', 'угу']
+    # Расширенная проверка ответов для НЕТ  
+    no_responses = ['нет', 'no', 'n', 'н', 'НЕТ', 'Нет', 'нЕТ', 'ytn', 'YTN', 'Ytn', 'не', 'отмена']
+    
     user_response = clean_user_input(msg.text).lower()
     
-    if user_response in ['да', 'yes', 'y', 'д']:
+    if user_response in yes_responses:
         await msg.answer(
             "Введи время смены в формате:\n"
             "<начало>-<конец>\n\n"
@@ -1052,10 +1278,17 @@ async def process_overwrite_confirm(msg: types.Message, state: FSMContext):
             reply_markup=get_cancel_keyboard()
         )
         await state.set_state(Form.waiting_for_start)
-    elif user_response in ['нет', 'no', 'n', 'н']:
+    elif user_response in no_responses:
         await cancel_action(msg, state, "❌ Добавление смены отменено, котик!")
     else:
-        await msg.answer("Пожалуйста, ответь 'да' или 'нет', пушистик! 🌸", reply_markup=get_cancel_keyboard())
+        await msg.answer(
+            "Пожалуйста, ответь *Да* или *Нет*, пушистик! 🌸\n\n"
+            "*Примеры ответов:*\n"
+            "• Да, конечно, ага, угу ✅\n"  
+            "• Нет, не надо, отмена ❌",
+            parse_mode="Markdown",
+            reply_markup=get_cancel_keyboard()
+        )
 
 @dp.message(Form.waiting_for_start)
 async def process_start(msg: types.Message, state: FSMContext):
@@ -1365,85 +1598,6 @@ async def show_profit_result(msg: types.Message, date: str, profit_value: float)
         text = f"📊 Твоя прибыль за {date}: {profit_float:.2f}₽.\nТы просто суперстар 🌟 — ещё немного, и миллион твой! Горжусь тобой! 🎉"
     
     await msg.answer(text, reply_markup=get_main_keyboard(msg.from_user.id))
-
-# ADMIN-ONLY COMMANDS
-@dp.message(Command("add_week"))
-async def add_week_start(msg: types.Message, state: FSMContext):
-    """Начало пакетного добавления смен на неделю"""
-    if not check_access(msg): return
-    
-    if not is_admin(msg.from_user.id):
-        await msg.answer("❌ Эта команда доступна только администратору, котик! 🐾")
-        return
-    
-    # Получаем даты текущей недели
-    today = datetime.now().date()
-    start_of_week = today - timedelta(days=today.weekday())  # Понедельник
-    end_of_week = start_of_week + timedelta(days=6)  # Воскресенье
-    
-    week_dates = []
-    current_date = start_of_week
-    while current_date <= end_of_week:
-        week_dates.append(current_date.strftime("%d.%m.%Y"))
-        current_date += timedelta(days=1)
-    
-    await state.update_data(week_dates=week_dates)
-    
-    await msg.answer(
-        f"📅 **Пакетное добавление смен на неделю:**\n"
-        f"Период: {week_dates[0]} - {week_dates[-1]}\n\n"
-        f"Введи время смен в формате:\n"
-        f"<начало>-<конец>\n\n"
-        f"Примеры:\n"
-        f"• 9-18\n"
-        f"• 10:00-19:00\n"
-        f"• 0900-1800\n\n"
-        f"Планируем неделю! 🚀",
-        reply_markup=get_cancel_keyboard()
-    )
-    await state.set_state(Form.waiting_for_week_schedule)
-
-# STATS FLOW - только для админа
-@dp.message(Command("stats"))
-async def stats_start(msg: types.Message, state: FSMContext):
-    if not check_access(msg): return
-    
-    if not is_admin(msg.from_user.id):
-        await msg.answer("❌ Эта команда доступна только администратору, котик! 🐾")
-        return
-        
-    if storage_type == 'google_sheets':
-        await msg.answer("❌ Статистика временно недоступна при использовании Google Sheets, котик! Используй SQLite хранилище 🐾")
-        return
-        
-    if not db_manager:
-        await msg.answer("❌ Модуль статистики недоступен, пушистик! 🐾")
-        return
-        
-    await msg.answer("Введи начальную дату для статистики (ДД.ММ.ГГГГ):", reply_markup=get_cancel_keyboard())
-    await state.set_state(Form.waiting_for_stats_start)
-
-# EXPORT FLOW - только для админа
-@dp.message(Command("export"))
-async def export_start(msg: types.Message, state: FSMContext):
-    if not check_access(msg): return
-    
-    if not is_admin(msg.from_user.id):
-        await msg.answer("❌ Эта команда доступна только администратору, котик! 🐾")
-        return
-        
-    if storage_type == 'google_sheets':
-        await msg.answer("❌ Экспорт временно недоступен при использовании Google Sheets, котик! Используй SQLite хранилище 🐾")
-        return
-        
-    if not db_manager:
-        await msg.answer("❌ Модуль экспорта недоступен, пушистик! 🐾")
-        return
-        
-    await msg.answer("Введи начальную дату для экспорта (ДД.ММ.ГГГГ):", reply_markup=get_cancel_keyboard())
-    await state.set_state(Form.waiting_for_export_start)
-
-# [ОСТАВШИЕСЯ ОБРАБОТЧИКИ СОСТОЯНИЙ ДЛЯ АДМИНСКИХ КОМАНД...]
 
 @dp.message()
 async def echo(message: types.Message):
