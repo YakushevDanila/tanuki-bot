@@ -7,6 +7,11 @@ from datetime import datetime, date as dt, timedelta
 import logging
 import os
 from dotenv import load_dotenv
+import atexit
+
+# Импорты для уведомлений
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from notifications import setup_scheduler
 
 # Загружаем переменные из .env.local
 load_dotenv('.env.local')
@@ -97,10 +102,51 @@ def check_access(message: types.Message):
     logger.info(f"🔓 Access granted for user: {message.from_user.id}")
     return True
 
+# Команды для уведомлений
+@dp.message(Command("test_notification"))
+async def test_notification_cmd(msg: types.Message):
+    """Тестовая команда для проверки уведомлений"""
+    if not check_access(msg): return
+        
+    await msg.answer("🔔 Отправляю тестовое уведомление...")
+    
+    # Тест утреннего напоминания
+    from notifications import send_shift_reminder
+    await send_shift_reminder(bot)
+    
+    await msg.answer("✅ Тестовое уведомление отправлено!")
+
+@dp.message(Command("notification_status"))
+async def notification_status_cmd(msg: types.Message):
+    """Статус уведомлений"""
+    if not check_access(msg): return
+        
+    user_id = os.getenv('USER_ID')
+    timezone = os.getenv('TIMEZONE', 'Europe/Moscow')
+    
+    status_text = (
+        f"🔔 **Статус уведомлений**\n"
+        f"• USER_ID: {user_id or 'Не установлен'}\n"
+        f"• Часовой пояс: {timezone}\n"
+        f"• Утренние напоминания: 10:00\n"
+        f"• Вечерние напоминания: 22:00\n"
+        f"• Недельная статистика: Воскресенье 20:00\n"
+    )
+    
+    if not user_id:
+        status_text += "\n⚠️ Для работы уведомлений установите USER_ID в настройках"
+    
+    await msg.answer(status_text)
+
 @dp.message(Command("start"))
 async def start_cmd(msg: types.Message):
     if not check_access(msg): return
     storage_info = "Google Sheets" if storage_type == "google_sheets" else "SQLite"
+    
+    # Проверяем статус уведомлений
+    user_id = os.getenv('USER_ID')
+    notification_status = "✅ Включены" if user_id else "❌ Выключены (нет USER_ID)"
+    
     text = (
         "Привет! 🌸\n"
         "Вот что я умею:\n"
@@ -112,8 +158,11 @@ async def start_cmd(msg: types.Message):
         "/stats — статистика за период\n"
         "/export — экспорт данных за период\n"
         "/myid — показать мой ID\n"
+        "/test_notification — тест уведомлений\n"
+        "/notification_status — статус уведомлений\n"
         "/help — показать это сообщение\n"
         f"\n💾 Хранилище: {storage_info}\n"
+        f"🔔 Уведомления: {notification_status}\n"
         "💰 Формула прибыли: (часы × 220) + чаевые + (выручка × 0.015)"
     )
     await msg.answer(text)
@@ -556,6 +605,13 @@ async def main():
     try:
         logger.info("🚀 Starting bot with enhanced features...")
         
+        # Настройка уведомлений
+        scheduler = setup_scheduler(bot)
+        if scheduler:
+            logger.info("✅ Notifications scheduler started")
+        else:
+            logger.warning("⚠️ Notifications scheduler not started - check USER_ID configuration")
+        
         # УДАЛЯЕМ ВЕБХУК ПЕРЕД ЗАПУСКОМ POLLING
         logger.info("🗑️ Deleting webhook...")
         await bot.delete_webhook(drop_pending_updates=True)
@@ -568,6 +624,17 @@ async def main():
         logger.error(f"💥 Bot crashed: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        # Останавливаем планировщик при выходе
+        if 'scheduler' in locals() and scheduler:
+            scheduler.shutdown()
+            logger.info("🛑 Scheduler stopped")
+
+# Обработка graceful shutdown
+def shutdown_hook():
+    logger.info("👋 Bot is shutting down...")
+
+atexit.register(shutdown_hook)
 
 if __name__ == "__main__":
     print("🟢 Bot starting with enhanced features...")
