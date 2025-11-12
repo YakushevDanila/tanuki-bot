@@ -44,6 +44,53 @@ def clean_user_input(text):
     parts = text.strip().split()
     return parts[0] if parts else ""
 
+# Умный парсинг времени
+async def parse_flexible_time(time_str):
+    """Умный парсинг времени в разных форматах"""
+    try:
+        # Очищаем строку
+        time_str = time_str.strip().replace(' ', '')
+        
+        # Проверяем разные разделители
+        for separator in ['-', '–', '—', 'до', 'по']:
+            if separator in time_str:
+                parts = time_str.split(separator)
+                if len(parts) == 2:
+                    start, end = parts
+                    
+                    # Нормализуем форматы времени
+                    def normalize_time(t):
+                        t = t.strip()
+                        # Если только часы, добавляем :00
+                        if len(t) <= 2 and t.isdigit():
+                            return f"{t.zfill(2)}:00"
+                        # Если формат 900, преобразуем в 09:00
+                        elif len(t) == 3 and t.isdigit():
+                            return f"0{t[0]}:{t[1:]}"
+                        # Если формат 900, преобразуем в 09:00
+                        elif len(t) == 4 and t.isdigit():
+                            return f"{t[:2]}:{t[2:]}"
+                        # Если уже в формате ЧЧ:ММ, проверяем
+                        elif ':' in t:
+                            hours, minutes = t.split(':')
+                            return f"{hours.zfill(2)}:{minutes}"
+                        return t
+                    
+                    start = normalize_time(start)
+                    end = normalize_time(end)
+                    
+                    # Проверяем валидность
+                    datetime.strptime(start, "%H:%M")
+                    datetime.strptime(end, "%H:%M")
+                    
+                    return start, end
+                    
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error parsing time: {e}")
+        return None
+
 # FSM States
 class Form(StatesGroup):
     waiting_for_date = State()
@@ -62,6 +109,9 @@ class Form(StatesGroup):
     waiting_for_stats_end = State()
     waiting_for_export_start = State()
     waiting_for_export_end = State()
+    waiting_for_week_schedule = State()
+    waiting_for_week_confirmation = State()
+    waiting_for_quick_today = State()
 
 # ВЫБОР ХРАНИЛИЩА
 storage_type = os.getenv('STORAGE_TYPE', 'google_sheets').lower()
@@ -151,6 +201,8 @@ async def start_cmd(msg: types.Message):
         "Привет! 🌸\n"
         "Вот что я умею:\n"
         "/add_shift — добавить дату и время смены\n"
+        "/add_week — добавить смены на всю неделю 🚀\n"
+        "/today — быстрый ввод за сегодня 🎯\n"
         "/revenue — ввести выручку за день\n"
         "/tips — добавить сумму чаевых 💰\n"
         "/edit — изменить данные\n"
@@ -176,6 +228,126 @@ async def show_my_id(msg: types.Message):
 @dp.message(Command("help"))
 async def help_cmd(msg: types.Message):
     await start_cmd(msg)
+
+# БЫСТРЫЙ ВВОД ЗА СЕГОДНЯ
+@dp.message(Command("today"))
+async def quick_today_start(msg: types.Message, state: FSMContext):
+    """Быстрый ввод данных за сегодня"""
+    if not check_access(msg): return
+    
+    today = datetime.now().strftime("%d.%m.%Y")
+    
+    # Проверяем есть ли смена на сегодня
+    if not await check_shift_exists(today):
+        await msg.answer(
+            f"❌ На сегодня ({today}) нет смены.\n\n"
+            f"Сначала создай смену - введи время в формате:\n"
+            f"<начало>-<конец>\n\n"
+            f"Примеры:\n"
+            f"• 9-18\n"
+            f"• 10:00-19:00\n"
+            f"• 0900-1800"
+        )
+        await state.update_data(today_date=today)
+        await state.set_state(Form.waiting_for_quick_today)
+        return
+    
+    # Если смена есть, запрашиваем финансовые данные
+    await msg.answer(
+        f"🎯 Быстрый ввод данных за {today}:\n\n"
+        f"Введи данные в формате:\n"
+        f"<выручка> <чаевые>\n\n"
+        f"Пример: 15000 1200"
+    )
+    await state.update_data(today_date=today, has_shift=True)
+    await state.set_state(Form.waiting_for_quick_today)
+
+@dp.message(Form.waiting_for_quick_today)
+async def process_quick_today(msg: types.Message, state: FSMContext):
+    """Обработка быстрого ввода за сегодня"""
+    user_data = await state.get_data()
+    today = user_data['today_date']
+    has_shift = user_data.get('has_shift', False)
+    
+    input_text = msg.text.strip()
+    
+    if has_shift:
+        # Обработка финансовых данных
+        parts = input_text.split()
+        if len(parts) != 2:
+            await msg.answer(
+                "❌ Неверный формат.\n"
+                "Введи: <выручка> <чаевые>\n"
+                "Пример: 15000 1200"
+            )
+            return
+        
+        revenue, tips = parts
+        
+        # Проверяем что это числа
+        try:
+            float(revenue)
+            float(tips)
+        except ValueError:
+            await msg.answer("❌ Оба значения должны быть числами")
+            return
+        
+        # Обновляем данные
+        success_revenue = await update_value(today, "выручка", revenue)
+        success_tips = await update_value(today, "чай", tips)
+        
+        if success_revenue and success_tips:
+            profit = await get_profit(today)
+            await msg.answer(
+                f"✅ Данные за {today} обновлены! 🎉\n\n"
+                f"• Выручка: {revenue}₽\n"
+                f"• Чаевые: {tips}₽\n"
+                f"• Прибыль: {profit}₽"
+            )
+        else:
+            await msg.answer("❌ Ошибка при обновлении данных")
+    
+    else:
+        # Обработка создания смены
+        time_parts = await parse_flexible_time(input_text)
+        if not time_parts:
+            await msg.answer(
+                "❌ Неверный формат времени.\n"
+                "Используй: начало-конец\n"
+                "Примеры: 9-18, 10:00-19:00"
+            )
+            return
+        
+        start_time, end_time = time_parts
+        
+        # Проверяем валидность времени
+        try:
+            datetime.strptime(start_time, "%H:%M")
+            datetime.strptime(end_time, "%H:%M")
+        except ValueError:
+            await msg.answer(
+                "❌ Неверный формат времени.\n"
+                "Используй ЧЧ:ММ, например: 09:00-18:00"
+            )
+            return
+        
+        # Создаем смену
+        success = await add_shift(today, start_time, end_time)
+        if success:
+            await msg.answer(
+                f"✅ Смена на {today} создана! 🎉\n"
+                f"Время: {start_time}-{end_time}\n\n"
+                f"Теперь введи финансовые данные:\n"
+                f"<выручка> <чаевые>\n\n"
+                f"Пример: 15000 1200"
+            )
+            await state.update_data(has_shift=True)
+            # Остаемся в том же состоянии для ввода финансовых данных
+        else:
+            await msg.answer("❌ Ошибка при создании смены")
+            await state.clear()
+    
+    await state.clear()
 
 # ADD SHIFT FLOW
 @dp.message(Command("add_shift"))
@@ -205,7 +377,14 @@ async def process_date(msg: types.Message, state: FSMContext):
         await state.set_state(Form.waiting_for_overwrite_confirm)
     else:
         await state.update_data(date=clean_date, is_overwrite=False)
-        await msg.answer("Введи время начала смены (чч:мм):")
+        await msg.answer(
+            "Введи время смены в формате:\n"
+            "<начало>-<конец>\n\n"
+            "Примеры:\n"
+            "• 9-18\n"
+            "• 10:00-19:00\n"
+            "• 0900-1800"
+        )
         await state.set_state(Form.waiting_for_start)
 
 # Обработчик подтверждения перезаписи
@@ -214,7 +393,13 @@ async def process_overwrite_confirm(msg: types.Message, state: FSMContext):
     user_response = clean_user_input(msg.text).lower()
     
     if user_response in ['да', 'yes', 'y', 'д']:
-        await msg.answer("Введи время начала смены (чч:мм):")
+        await msg.answer(
+            "Введи время смены в формате:\n"
+            "<начало>-<конец>\n\n"
+            "Примеры:\n"
+            "• 9-18\n"
+            "• 10:00-19:00"
+        )
         await state.set_state(Form.waiting_for_start)
     elif user_response in ['нет', 'no', 'n', 'н']:
         await msg.answer("❌ Добавление смены отменено. Используй /add_shift чтобы начать заново.")
@@ -224,44 +409,46 @@ async def process_overwrite_confirm(msg: types.Message, state: FSMContext):
 
 @dp.message(Form.waiting_for_start)
 async def process_start(msg: types.Message, state: FSMContext):
-    clean_start = clean_user_input(msg.text)
+    time_input = msg.text.strip()
+    
+    # Используем умный парсинг времени
+    time_parts = await parse_flexible_time(time_input)
+    if not time_parts:
+        await msg.answer(
+            "❌ Неверный формат времени.\n"
+            "Используй: начало-конец\n"
+            "Примеры: 9-18, 10:00-19:00"
+        )
+        await state.clear()
+        return
+    
+    start_time, end_time = time_parts
     
     # Проверяем валидность времени
     try:
-        datetime.strptime(clean_start, "%H:%M")
+        datetime.strptime(start_time, "%H:%M")
+        datetime.strptime(end_time, "%H:%M")
     except ValueError:
-        await msg.answer("❌ Неверный формат времени. Используй чч:мм (например, 09:00)")
+        await msg.answer(
+            "❌ Неверный формат времени.\n"
+            "Используй ЧЧ:ММ, например: 09:00-18:00"
+        )
         await state.clear()
         return
         
-    await state.update_data(start=clean_start)
-    await msg.answer("Теперь время окончания (чч:мм):")
-    await state.set_state(Form.waiting_for_end)
-
-@dp.message(Form.waiting_for_end)
-async def process_end(msg: types.Message, state: FSMContext):
+    await state.update_data(start=start_time, end=end_time)
+    
     user_data = await state.get_data()
     date_msg = user_data['date']
-    start = user_data['start']
-    end = clean_user_input(msg.text)
-    
-    # Проверяем валидность времени окончания
-    try:
-        datetime.strptime(end, "%H:%M")
-    except ValueError:
-        await msg.answer("❌ Неверный формат времени. Используй чч:мм (например, 18:00)")
-        await state.clear()
-        return
-    
-    # Передаем флаг перезаписи в функцию add_shift
     is_overwrite = user_data.get('is_overwrite', False)
-    success = await add_shift(date_msg, start, end, reset_financials=is_overwrite)
+    
+    success = await add_shift(date_msg, start_time, end_time, reset_financials=is_overwrite)
     
     if success:
         # Если это перезапись, сбрасываем финансовые данные и предлагаем ввести заново
         if is_overwrite:
             await msg.answer(
-                f"✅ Смена {date_msg} ({start}-{end}) перезаписана! 🩷\n\n"
+                f"✅ Смена {date_msg} ({start_time}-{end_time}) перезаписана! 🩷\n\n"
                 f"Теперь нужно заново ввести финансовые данные:\n"
                 f"1. Введи сумму выручки за этот день:"
             )
@@ -273,11 +460,153 @@ async def process_end(msg: types.Message, state: FSMContext):
             )
             await state.set_state(Form.waiting_for_revenue)
         else:
-            await msg.answer(f"✅ Смена {date_msg} ({start}-{end}) добавлена 🩷")
+            await msg.answer(f"✅ Смена {date_msg} ({start_time}-{end_time}) добавлена 🩷")
             await state.clear()
     else:
         await msg.answer("❌ Ошибка при добавлении смены")
         await state.clear()
+
+# ПАКЕТНОЕ ДОБАВЛЕНИЕ НА НЕДЕЛЮ
+@dp.message(Command("add_week"))
+async def add_week_start(msg: types.Message, state: FSMContext):
+    """Начало пакетного добавления смен на неделю"""
+    if not check_access(msg): return
+    
+    # Получаем даты текущей недели
+    today = datetime.now().date()
+    start_of_week = today - timedelta(days=today.weekday())  # Понедельник
+    end_of_week = start_of_week + timedelta(days=6)  # Воскресенье
+    
+    week_dates = []
+    current_date = start_of_week
+    while current_date <= end_of_week:
+        week_dates.append(current_date.strftime("%d.%m.%Y"))
+        current_date += timedelta(days=1)
+    
+    await state.update_data(week_dates=week_dates)
+    
+    await msg.answer(
+        f"📅 Пакетное добавление смен на неделю:\n"
+        f"Период: {week_dates[0]} - {week_dates[-1]}\n\n"
+        f"Введи время смен в формате:\n"
+        f"<начало>-<конец>\n\n"
+        f"Примеры:\n"
+        f"• 9-18\n"
+        f"• 10:00-19:00\n"
+        f"• 0900-1800"
+    )
+    await state.set_state(Form.waiting_for_week_schedule)
+
+@dp.message(Form.waiting_for_week_schedule)
+async def process_week_schedule(msg: types.Message, state: FSMContext):
+    """Обработка ввода времени для пакетного добавления"""
+    time_input = msg.text.strip()
+    
+    # Парсим время с улучшенной обработкой разных форматов
+    time_parts = await parse_flexible_time(time_input)
+    if not time_parts:
+        await msg.answer(
+            "❌ Неверный формат времени.\n"
+            "Используй: начало-конец\n"
+            "Пример: 9-18, 10:00-19:00"
+        )
+        return
+    
+    start_time, end_time = time_parts
+    
+    # Проверяем валидность времени
+    try:
+        datetime.strptime(start_time, "%H:%M")
+        datetime.strptime(end_time, "%H:%M")
+    except ValueError:
+        await msg.answer(
+            "❌ Неверный формат времени.\n"
+            "Используй ЧЧ:ММ, например: 09:00-18:00"
+        )
+        return
+    
+    user_data = await state.get_data()
+    week_dates = user_data['week_dates']
+    
+    # Проверяем существующие смены
+    existing_shifts = []
+    new_shifts = []
+    
+    for date_str in week_dates:
+        if await check_shift_exists(date_str):
+            existing_shifts.append(date_str)
+        else:
+            new_shifts.append(date_str)
+    
+    # Сохраняем данные для подтверждения
+    await state.update_data(
+        start_time=start_time,
+        end_time=end_time,
+        new_shifts=new_shifts,
+        existing_shifts=existing_shifts
+    )
+    
+    # Формируем сообщение для подтверждения
+    confirmation_text = f"📋 Будут добавлены смены:\n"
+    confirmation_text += f"Время: {start_time}-{end_time}\n\n"
+    
+    if new_shifts:
+        confirmation_text += f"✅ Новые смены ({len(new_shifts)}):\n"
+        for date in new_shifts:
+            confirmation_text += f"• {date}\n"
+    
+    if existing_shifts:
+        confirmation_text += f"\n⚠️ Уже существуют ({len(existing_shifts)}):\n"
+        for date in existing_shifts[:3]:  # Показываем только первые 3
+            confirmation_text += f"• {date}\n"
+        if len(existing_shifts) > 3:
+            confirmation_text += f"• ... и ещё {len(existing_shifts) - 3}\n"
+    
+    confirmation_text += f"\nДобавить смены? (да/нет)"
+    
+    await msg.answer(confirmation_text)
+    await state.set_state(Form.waiting_for_week_confirmation)
+
+@dp.message(Form.waiting_for_week_confirmation)
+async def process_week_confirmation(msg: types.Message, state: FSMContext):
+    """Обработка подтверждения пакетного добавления"""
+    user_response = clean_user_input(msg.text).lower()
+    
+    if user_response in ['да', 'yes', 'y', 'д']:
+        user_data = await state.get_data()
+        start_time = user_data['start_time']
+        end_time = user_data['end_time']
+        new_shifts = user_data['new_shifts']
+        existing_shifts = user_data['existing_shifts']
+        
+        # Добавляем смены
+        added_count = 0
+        for date_str in new_shifts:
+            success = await add_shift(date_str, start_time, end_time)
+            if success:
+                added_count += 1
+            await asyncio.sleep(0.1)  # Небольшая задержка между запросами
+        
+        # Формируем отчет
+        report_text = f"✅ Пакетное добавление завершено!\n\n"
+        report_text += f"📊 Статистика:\n"
+        report_text += f"• Добавлено смен: {added_count}\n"
+        report_text += f"• Уже существовало: {len(existing_shifts)}\n"
+        report_text += f"• Время: {start_time}-{end_time}\n"
+        
+        if added_count > 0:
+            report_text += f"\n🎉 Отличная работа! Неделя распланирована!"
+        else:
+            report_text += f"\nℹ️ Все смены на эту неделю уже добавлены"
+        
+        await msg.answer(report_text)
+        
+    elif user_response in ['нет', 'no', 'n', 'н']:
+        await msg.answer("❌ Пакетное добавление отменено")
+    else:
+        await msg.answer("Пожалуйста, ответь 'да' или 'нет'")
+    
+    await state.clear()
 
 # REVENUE FLOW - обновленная версия для перезаписи
 @dp.message(Command("revenue"))
