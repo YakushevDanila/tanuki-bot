@@ -112,6 +112,9 @@ class Form(StatesGroup):
     waiting_for_week_schedule = State()
     waiting_for_week_confirmation = State()
     waiting_for_quick_today = State()
+    waiting_for_shifts_count = State()
+    waiting_for_shift_data = State()
+    waiting_for_multiple_confirmation = State()
 
 # ВЫБОР ХРАНИЛИЩА
 storage_type = os.getenv('STORAGE_TYPE', 'google_sheets').lower()
@@ -202,6 +205,7 @@ async def start_cmd(msg: types.Message):
         "Вот что я умею:\n"
         "/add_shift — добавить дату и время смены\n"
         "/add_week — добавить смены на всю неделю 🚀\n"
+        "/add_multiple — добавить несколько смен 🆕\n"
         "/today — быстрый ввод за сегодня 🎯\n"
         "/revenue — ввести выручку за день\n"
         "/tips — добавить сумму чаевых 💰\n"
@@ -229,6 +233,199 @@ async def show_my_id(msg: types.Message):
 async def help_cmd(msg: types.Message):
     await start_cmd(msg)
 
+# ПОШАГОВОЕ ДОБАВЛЕНИЕ НЕСКОЛЬКИХ СМЕН
+@dp.message(Command("add_multiple"))
+async def add_multiple_step_start(msg: types.Message, state: FSMContext):
+    """Начало пошагового добавления нескольких смен"""
+    if not check_access(msg): return
+    
+    await msg.answer(
+        "🌸 **Пошаговое добавление смен**\n\n"
+        "Сколько смен хочешь добавить, котик? 🐾\n"
+        "Введи число от 1 до 10:"
+    )
+    await state.set_state(Form.waiting_for_shifts_count)
+
+@dp.message(Form.waiting_for_shifts_count)
+async def process_shifts_count(msg: types.Message, state: FSMContext):
+    """Обработка количества смен"""
+    try:
+        count = int(clean_user_input(msg.text))
+        if count < 1 or count > 10:
+            await msg.answer("❌ Много хочешь, котик! Введи число от 1 до 10 🐾")
+            return
+    except ValueError:
+        await msg.answer("❌ Это не похоже на число, пушистик! Введи корректное число 🌸")
+        return
+    
+    await state.update_data(
+        shifts_count=count,
+        current_shift=1,
+        shifts_data=[]
+    )
+    
+    await ask_for_shift_data(msg, state)
+
+async def ask_for_shift_data(msg: types.Message, state: FSMContext):
+    """Запрос данных о смене"""
+    user_data = await state.get_data()
+    current = user_data['current_shift']
+    total = user_data['shifts_count']
+    
+    await msg.answer(
+        f"📝 **Смена {current} из {total}**\n\n"
+        f"Введи данные в формате:\n"
+        f"`<дата> <время>`\n\n"
+        f"**Примеры:**\n"
+        f"• 15.03.2024 9-18\n"
+        f"• 16.03.2024 10:00-19:00\n\n"
+        f"Не торопись, всё успеем! 🌸"
+    )
+    await state.set_state(Form.waiting_for_shift_data)
+
+@dp.message(Form.waiting_for_shift_data)
+async def process_shift_data(msg: types.Message, state: FSMContext):
+    """Обработка данных смены"""
+    user_data = await state.get_data()
+    current = user_data['current_shift']
+    total = user_data['shifts_count']
+    shifts_data = user_data['shifts_data']
+    
+    input_text = msg.text.strip()
+    
+    # Разделяем дату и время
+    parts = input_text.split()
+    if len(parts) < 2:
+        await msg.answer("❌ Кажется, чего-то не хватает, котик! Нужно: <дата> <время> 🐾")
+        return
+    
+    date_str = parts[0]
+    time_str = ' '.join(parts[1:])
+    
+    # Проверяем дату
+    try:
+        datetime.strptime(date_str, "%d.%m.%Y").date()
+    except ValueError:
+        await msg.answer("❌ Неверный формат даты, пушистик! Используй ДД.ММ.ГГГГ 🌸")
+        return
+    
+    # Парсим время
+    time_parts = await parse_flexible_time(time_str)
+    if not time_parts:
+        await msg.answer(
+            "❌ Не получилось понять время, котик! 🐾\n"
+            "Используй: начало-конец\n"
+            "Примеры: 9-18, 10:00-19:00"
+        )
+        return
+    
+    start_time, end_time = time_parts
+    
+    # Проверяем валидность времени
+    try:
+        datetime.strptime(start_time, "%H:%M")
+        datetime.strptime(end_time, "%H:%M")
+    except ValueError:
+        await msg.answer("❌ Что-то не так со временем, давай попробуем ещё раз? 🌸")
+        return
+    
+    # Добавляем смену в список
+    shifts_data.append({
+        'date': date_str,
+        'start': start_time,
+        'end': end_time
+    })
+    
+    await state.update_data(shifts_data=shifts_data)
+    
+    # Если это не последняя смена, запрашиваем следующую
+    if current < total:
+        await state.update_data(current_shift=current + 1)
+        await ask_for_shift_data(msg, state)
+    else:
+        # Все смены собраны, показываем итог и добавляем
+        await process_all_shifts_collected(msg, state)
+
+async def process_all_shifts_collected(msg: types.Message, state: FSMContext):
+    """Обработка собранных смен"""
+    user_data = await state.get_data()
+    shifts_data = user_data['shifts_data']
+    
+    # Проверяем существующие смены
+    existing_shifts = []
+    new_shifts = []
+    
+    for shift in shifts_data:
+        if await check_shift_exists(shift['date']):
+            existing_shifts.append(shift)
+        else:
+            new_shifts.append(shift)
+    
+    # Формируем сообщение для подтверждения
+    confirmation_text = "📋 **Вот какие смены у нас получились:**\n\n"
+    
+    for i, shift in enumerate(shifts_data, 1):
+        status = "⚠️" if shift in existing_shifts else "✅"
+        confirmation_text += f"{status} {i}. {shift['date']} {shift['start']}-{shift['end']}\n"
+    
+    if existing_shifts:
+        confirmation_text += f"\n⚠️ **{len(existing_shifts)} смен уже существуют и будут перезаписаны!**"
+    
+    confirmation_text += "\n\n**Добавляем все смены, котик?** 🐾 (да/нет)"
+    
+    await state.update_data(
+        new_shifts=new_shifts,
+        existing_shifts=existing_shifts
+    )
+    
+    await msg.answer(confirmation_text)
+    await state.set_state(Form.waiting_for_multiple_confirmation)
+
+@dp.message(Form.waiting_for_multiple_confirmation)
+async def process_multiple_confirmation(msg: types.Message, state: FSMContext):
+    """Обработка подтверждения добавления нескольких смен"""
+    user_response = clean_user_input(msg.text).lower()
+    
+    if user_response in ['да', 'yes', 'y', 'д']:
+        user_data = await state.get_data()
+        new_shifts = user_data['new_shifts']
+        existing_shifts = user_data['existing_shifts']
+        
+        # Добавляем новые смены
+        added_count = 0
+        for shift in new_shifts:
+            success = await add_shift(shift['date'], shift['start'], shift['end'])
+            if success:
+                added_count += 1
+            await asyncio.sleep(0.1)
+        
+        # Перезаписываем существующие смены
+        overwritten_count = 0
+        for shift in existing_shifts:
+            success = await add_shift(shift['date'], shift['start'], shift['end'], reset_financials=True)
+            if success:
+                overwritten_count += 1
+            await asyncio.sleep(0.1)
+        
+        # Формируем отчет
+        report_text = f"✅ **Готово, котик! Все смены добавлены!** 🎉\n\n"
+        report_text += f"📊 **Статистика:**\n"
+        report_text += f"• Добавлено новых: {added_count} 🌸\n"
+        report_text += f"• Перезаписано: {overwritten_count} ✨\n"
+        report_text += f"• Всего обработано: {added_count + overwritten_count} 🐾\n"
+        
+        if added_count + overwritten_count > 0:
+            report_text += f"\n🎉 **Ты просто супер! Теперь можно отдохнуть!** 🌟"
+        
+        await msg.answer(report_text)
+        
+    elif user_response in ['нет', 'no', 'n', 'н']:
+        await msg.answer("❌ Добавление смен отменено, котик! Ничего страшного, всегда можно начать заново 🐾")
+    else:
+        await msg.answer("Пожалуйста, ответь 'да' или 'нет', пушистик! 🌸")
+    
+    await state.clear()
+
 # БЫСТРЫЙ ВВОД ЗА СЕГОДНЯ
 @dp.message(Command("today"))
 async def quick_today_start(msg: types.Message, state: FSMContext):
@@ -240,7 +437,7 @@ async def quick_today_start(msg: types.Message, state: FSMContext):
     # Проверяем есть ли смена на сегодня
     if not await check_shift_exists(today):
         await msg.answer(
-            f"❌ На сегодня ({today}) нет смены.\n\n"
+            f"❌ На сегодня ({today}) нет смены, котик!\n\n"
             f"Сначала создай смену - введи время в формате:\n"
             f"<начало>-<конец>\n\n"
             f"Примеры:\n"
@@ -254,10 +451,11 @@ async def quick_today_start(msg: types.Message, state: FSMContext):
     
     # Если смена есть, запрашиваем финансовые данные
     await msg.answer(
-        f"🎯 Быстрый ввод данных за {today}:\n\n"
+        f"🎯 **Быстрый ввод данных за {today}:**\n\n"
         f"Введи данные в формате:\n"
         f"<выручка> <чаевые>\n\n"
-        f"Пример: 15000 1200"
+        f"Пример: 15000 1200\n\n"
+        f"Поехали! 🚀"
     )
     await state.update_data(today_date=today, has_shift=True)
     await state.set_state(Form.waiting_for_quick_today)
@@ -276,7 +474,7 @@ async def process_quick_today(msg: types.Message, state: FSMContext):
         parts = input_text.split()
         if len(parts) != 2:
             await msg.answer(
-                "❌ Неверный формат.\n"
+                "❌ Неверный формат, котик!\n"
                 "Введи: <выручка> <чаевые>\n"
                 "Пример: 15000 1200"
             )
@@ -289,7 +487,7 @@ async def process_quick_today(msg: types.Message, state: FSMContext):
             float(revenue)
             float(tips)
         except ValueError:
-            await msg.answer("❌ Оба значения должны быть числами")
+            await msg.answer("❌ Оба значения должны быть числами, пушистик!")
             return
         
         # Обновляем данные
@@ -299,20 +497,21 @@ async def process_quick_today(msg: types.Message, state: FSMContext):
         if success_revenue and success_tips:
             profit = await get_profit(today)
             await msg.answer(
-                f"✅ Данные за {today} обновлены! 🎉\n\n"
+                f"✅ **Данные за {today} обновлены!** 🎉\n\n"
                 f"• Выручка: {revenue}₽\n"
                 f"• Чаевые: {tips}₽\n"
-                f"• Прибыль: {profit}₽"
+                f"• Прибыль: {profit}₽\n\n"
+                f"Отличная работа! 🌟"
             )
         else:
-            await msg.answer("❌ Ошибка при обновлении данных")
+            await msg.answer("❌ Ошибка при обновлении данных, котик! Давай попробуем ещё раз? 🐾")
     
     else:
         # Обработка создания смены
         time_parts = await parse_flexible_time(input_text)
         if not time_parts:
             await msg.answer(
-                "❌ Неверный формат времени.\n"
+                "❌ Неверный формат времени, пушистик!\n"
                 "Используй: начало-конец\n"
                 "Примеры: 9-18, 10:00-19:00"
             )
@@ -326,7 +525,7 @@ async def process_quick_today(msg: types.Message, state: FSMContext):
             datetime.strptime(end_time, "%H:%M")
         except ValueError:
             await msg.answer(
-                "❌ Неверный формат времени.\n"
+                "❌ Неверный формат времени, котик!\n"
                 "Используй ЧЧ:ММ, например: 09:00-18:00"
             )
             return
@@ -335,7 +534,7 @@ async def process_quick_today(msg: types.Message, state: FSMContext):
         success = await add_shift(today, start_time, end_time)
         if success:
             await msg.answer(
-                f"✅ Смена на {today} создана! 🎉\n"
+                f"✅ **Смена на {today} создана!** 🎉\n"
                 f"Время: {start_time}-{end_time}\n\n"
                 f"Теперь введи финансовые данные:\n"
                 f"<выручка> <чаевые>\n\n"
@@ -344,7 +543,7 @@ async def process_quick_today(msg: types.Message, state: FSMContext):
             await state.update_data(has_shift=True)
             # Остаемся в том же состоянии для ввода финансовых данных
         else:
-            await msg.answer("❌ Ошибка при создании смены")
+            await msg.answer("❌ Ошибка при создании смены, котик! 🐾")
             await state.clear()
     
     await state.clear()
@@ -353,7 +552,7 @@ async def process_quick_today(msg: types.Message, state: FSMContext):
 @dp.message(Command("add_shift"))
 async def add_shift_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
-    await msg.answer("Введи дату смены (ДД.ММ.ГГГГ):")
+    await msg.answer("Введи дату смены, котик! (ДД.ММ.ГГГГ):")
     await state.set_state(Form.waiting_for_date)
 
 @dp.message(Form.waiting_for_date)
@@ -364,7 +563,7 @@ async def process_date(msg: types.Message, state: FSMContext):
     try:
         datetime.strptime(clean_date, "%d.%m.%Y").date()
     except ValueError:
-        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ (например, 15.03.2024)")
+        await msg.answer("❌ Неверный формат даты, пушистик! Используй ДД.ММ.ГГГГ (например, 15.03.2024)")
         await state.clear()
         return
     
@@ -372,7 +571,7 @@ async def process_date(msg: types.Message, state: FSMContext):
     exists = await check_shift_exists(clean_date)
     if exists:
         await state.update_data(date=clean_date, is_overwrite=True)
-        await msg.answer(f"❌ Смена на дату {clean_date} уже существует!\n"
+        await msg.answer(f"❌ Смена на дату {clean_date} уже существует, котик!\n"
                         "Хочешь перезаписать ее? (да/нет)")
         await state.set_state(Form.waiting_for_overwrite_confirm)
     else:
@@ -402,10 +601,10 @@ async def process_overwrite_confirm(msg: types.Message, state: FSMContext):
         )
         await state.set_state(Form.waiting_for_start)
     elif user_response in ['нет', 'no', 'n', 'н']:
-        await msg.answer("❌ Добавление смены отменено. Используй /add_shift чтобы начать заново.")
+        await msg.answer("❌ Добавление смены отменено, котик! Используй /add_shift чтобы начать заново 🐾")
         await state.clear()
     else:
-        await msg.answer("Пожалуйста, ответь 'да' или 'нет'")
+        await msg.answer("Пожалуйста, ответь 'да' или 'нет', пушистик! 🌸")
 
 @dp.message(Form.waiting_for_start)
 async def process_start(msg: types.Message, state: FSMContext):
@@ -415,7 +614,7 @@ async def process_start(msg: types.Message, state: FSMContext):
     time_parts = await parse_flexible_time(time_input)
     if not time_parts:
         await msg.answer(
-            "❌ Неверный формат времени.\n"
+            "❌ Неверный формат времени, котик!\n"
             "Используй: начало-конец\n"
             "Примеры: 9-18, 10:00-19:00"
         )
@@ -430,7 +629,7 @@ async def process_start(msg: types.Message, state: FSMContext):
         datetime.strptime(end_time, "%H:%M")
     except ValueError:
         await msg.answer(
-            "❌ Неверный формат времени.\n"
+            "❌ Неверный формат времени, пушистик!\n"
             "Используй ЧЧ:ММ, например: 09:00-18:00"
         )
         await state.clear()
@@ -460,10 +659,10 @@ async def process_start(msg: types.Message, state: FSMContext):
             )
             await state.set_state(Form.waiting_for_revenue)
         else:
-            await msg.answer(f"✅ Смена {date_msg} ({start_time}-{end_time}) добавлена 🩷")
+            await msg.answer(f"✅ Смена {date_msg} ({start_time}-{end_time}) добавлена! 🩷\n\nОтличная работа, котик! 🌟")
             await state.clear()
     else:
-        await msg.answer("❌ Ошибка при добавлении смены")
+        await msg.answer("❌ Ошибка при добавлении смены, котик! 🐾")
         await state.clear()
 
 # ПАКЕТНОЕ ДОБАВЛЕНИЕ НА НЕДЕЛЮ
@@ -486,14 +685,15 @@ async def add_week_start(msg: types.Message, state: FSMContext):
     await state.update_data(week_dates=week_dates)
     
     await msg.answer(
-        f"📅 Пакетное добавление смен на неделю:\n"
+        f"📅 **Пакетное добавление смен на неделю:**\n"
         f"Период: {week_dates[0]} - {week_dates[-1]}\n\n"
         f"Введи время смен в формате:\n"
         f"<начало>-<конец>\n\n"
         f"Примеры:\n"
         f"• 9-18\n"
         f"• 10:00-19:00\n"
-        f"• 0900-1800"
+        f"• 0900-1800\n\n"
+        f"Планируем неделю! 🚀"
     )
     await state.set_state(Form.waiting_for_week_schedule)
 
@@ -506,7 +706,7 @@ async def process_week_schedule(msg: types.Message, state: FSMContext):
     time_parts = await parse_flexible_time(time_input)
     if not time_parts:
         await msg.answer(
-            "❌ Неверный формат времени.\n"
+            "❌ Неверный формат времени, котик!\n"
             "Используй: начало-конец\n"
             "Пример: 9-18, 10:00-19:00"
         )
@@ -520,7 +720,7 @@ async def process_week_schedule(msg: types.Message, state: FSMContext):
         datetime.strptime(end_time, "%H:%M")
     except ValueError:
         await msg.answer(
-            "❌ Неверный формат времени.\n"
+            "❌ Неверный формат времени, пушистик!\n"
             "Используй ЧЧ:ММ, например: 09:00-18:00"
         )
         return
@@ -547,22 +747,22 @@ async def process_week_schedule(msg: types.Message, state: FSMContext):
     )
     
     # Формируем сообщение для подтверждения
-    confirmation_text = f"📋 Будут добавлены смены:\n"
+    confirmation_text = f"📋 **Будут добавлены смены:**\n"
     confirmation_text += f"Время: {start_time}-{end_time}\n\n"
     
     if new_shifts:
-        confirmation_text += f"✅ Новые смены ({len(new_shifts)}):\n"
+        confirmation_text += f"✅ **Новые смены ({len(new_shifts)}):**\n"
         for date in new_shifts:
             confirmation_text += f"• {date}\n"
     
     if existing_shifts:
-        confirmation_text += f"\n⚠️ Уже существуют ({len(existing_shifts)}):\n"
+        confirmation_text += f"\n⚠️ **Уже существуют ({len(existing_shifts)}):**\n"
         for date in existing_shifts[:3]:  # Показываем только первые 3
             confirmation_text += f"• {date}\n"
         if len(existing_shifts) > 3:
             confirmation_text += f"• ... и ещё {len(existing_shifts) - 3}\n"
     
-    confirmation_text += f"\nДобавить смены? (да/нет)"
+    confirmation_text += f"\n**Добавляем смены, котик?** 🐾 (да/нет)"
     
     await msg.answer(confirmation_text)
     await state.set_state(Form.waiting_for_week_confirmation)
@@ -588,23 +788,23 @@ async def process_week_confirmation(msg: types.Message, state: FSMContext):
             await asyncio.sleep(0.1)  # Небольшая задержка между запросами
         
         # Формируем отчет
-        report_text = f"✅ Пакетное добавление завершено!\n\n"
-        report_text += f"📊 Статистика:\n"
-        report_text += f"• Добавлено смен: {added_count}\n"
-        report_text += f"• Уже существовало: {len(existing_shifts)}\n"
-        report_text += f"• Время: {start_time}-{end_time}\n"
+        report_text = f"✅ **Пакетное добавление завершено!** 🎉\n\n"
+        report_text += f"📊 **Статистика:**\n"
+        report_text += f"• Добавлено смен: {added_count} 🌸\n"
+        report_text += f"• Уже существовало: {len(existing_shifts)} ✨\n"
+        report_text += f"• Время: {start_time}-{end_time} 🐾\n"
         
         if added_count > 0:
-            report_text += f"\n🎉 Отличная работа! Неделя распланирована!"
+            report_text += f"\n🎉 **Отличная работа! Неделя распланирована!** 🌟"
         else:
-            report_text += f"\nℹ️ Все смены на эту неделю уже добавлены"
+            report_text += f"\nℹ️ Все смены на эту неделю уже добавлены, умничка! 💖"
         
         await msg.answer(report_text)
         
     elif user_response in ['нет', 'no', 'n', 'н']:
-        await msg.answer("❌ Пакетное добавление отменено")
+        await msg.answer("❌ Пакетное добавление отменено, котик! Ничего страшного 🐾")
     else:
-        await msg.answer("Пожалуйста, ответь 'да' или 'нет'")
+        await msg.answer("Пожалуйста, ответь 'да' или 'нет', пушистик! 🌸")
     
     await state.clear()
 
@@ -612,7 +812,7 @@ async def process_week_confirmation(msg: types.Message, state: FSMContext):
 @dp.message(Command("revenue"))
 async def revenue_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
-    await msg.answer("Введи дату (ДД.ММ.ГГГГ):")
+    await msg.answer("Введи дату, котик! (ДД.ММ.ГГГГ):")
     await state.set_state(Form.waiting_for_revenue_date)
 
 @dp.message(Form.waiting_for_revenue_date)
@@ -622,7 +822,7 @@ async def process_revenue_date(msg: types.Message, state: FSMContext):
     # Проверяем существование смены
     exists = await check_shift_exists(clean_date)
     if not exists:
-        await msg.answer(f"❌ Смена на дату {clean_date} не найдена. Сначала добавь смену через /add_shift")
+        await msg.answer(f"❌ Смена на дату {clean_date} не найдена, котик! Сначала добавь смену через /add_shift 🐾")
         await state.clear()
         return
         
@@ -640,7 +840,7 @@ async def process_revenue(msg: types.Message, state: FSMContext):
     try:
         float(rev)
     except ValueError:
-        await msg.answer("❌ Неверный формат числа. Введи только цифры (например: 5000)")
+        await msg.answer("❌ Неверный формат числа, пушистик! Введи только цифры (например: 5000)")
         await state.clear()
         return
     
@@ -653,17 +853,17 @@ async def process_revenue(msg: types.Message, state: FSMContext):
             await msg.answer(f"✅ Выручка {rev}₽ обновлена! 💰✨\n\nТеперь введи сумму чаевых:")
             await state.set_state(Form.waiting_for_tips)
         else:
-            await msg.answer(f"✅ Выручка {rev}₽ обновлена для даты {date_msg} 💰✨")
+            await msg.answer(f"✅ Выручка {rev}₽ обновлена для даты {date_msg}! 💰✨\n\nМолодец, котик! 🌟")
             await state.clear()
     else:
-        await msg.answer("❌ Не удалось обновить выручку")
+        await msg.answer("❌ Не удалось обновить выручку, котик! 🐾")
         await state.clear()
 
 # TIPS FLOW - обновленная версия для перезаписи
 @dp.message(Command("tips"))
 async def tips_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
-    await msg.answer("Введи дату (ДД.ММ.ГГГГ):")
+    await msg.answer("Введи дату, котик! (ДД.ММ.ГГГГ):")
     await state.set_state(Form.waiting_for_tips_date)
 
 @dp.message(Form.waiting_for_tips_date)
@@ -673,7 +873,7 @@ async def process_tips_date(msg: types.Message, state: FSMContext):
     # Проверяем существование смены
     exists = await check_shift_exists(clean_date)
     if not exists:
-        await msg.answer(f"❌ Смена на дату {clean_date} не найдена. Сначала добавь смену через /add_shift")
+        await msg.answer(f"❌ Смена на дату {clean_date} не найдена, котик! Сначала добавь смену через /add_shift 🐾")
         await state.clear()
         return
         
@@ -691,7 +891,7 @@ async def process_tips(msg: types.Message, state: FSMContext):
     try:
         float(tips_amount)
     except ValueError:
-        await msg.answer("❌ Неверный формат числа. Введи только цифры (например: 500)")
+        await msg.answer("❌ Неверный формат числа, пушистик! Введи только цифры (например: 500)")
         await state.clear()
         return
     
@@ -705,13 +905,14 @@ async def process_tips(msg: types.Message, state: FSMContext):
             
             await msg.answer(
                 f"✅ Чаевые {tips_amount}₽ добавлены! ☕️💖\n\n"
-                f"🎉 Все данные за {date_msg} успешно перезаписаны!\n"
+                f"🎉 **Все данные за {date_msg} успешно перезаписаны!** 🌟\n"
                 f"• Время: {start}-{end}\n"
                 f"• Выручка: {revenue}₽\n"
-                f"• Чаевые: {tips_amount}₽"
+                f"• Чаевые: {tips_amount}₽\n\n"
+                f"Отличная работа, котик! 🐾"
             )
         else:
-            await msg.answer(f"✅ Чаевые {tips_amount}₽ добавлены для даты {date_msg} ☕️💖")
+            await msg.answer(f"✅ Чаевые {tips_amount}₽ добавлены для даты {date_msg}! ☕️💖\n\nПушистик, ты лучшая! 🌸")
     
     await state.clear()
 
@@ -719,7 +920,7 @@ async def process_tips(msg: types.Message, state: FSMContext):
 @dp.message(Command("edit"))
 async def edit_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
-    await msg.answer("Укажи дату (ДД.ММ.ГГГГ):")
+    await msg.answer("Укажи дату, котик! (ДД.ММ.ГГГГ):")
     await state.set_state(Form.waiting_for_edit_date)
 
 @dp.message(Form.waiting_for_edit_date)
@@ -729,19 +930,19 @@ async def process_edit_date(msg: types.Message, state: FSMContext):
     # Проверяем существование смены
     exists = await check_shift_exists(clean_date)
     if not exists:
-        await msg.answer(f"❌ Смена на дату {clean_date} не найдена. Сначала добавь смену через /add_shift")
+        await msg.answer(f"❌ Смена на дату {clean_date} не найдена, котик! Сначала добавь смену через /add_shift 🐾")
         await state.clear()
         return
         
     await state.update_data(edit_date=clean_date)
-    await msg.answer("Что редактируем? (чай, начало, конец, выручка)")
+    await msg.answer("Что редактируем, пушистик? (чай, начало, конец, выручка)")
     await state.set_state(Form.waiting_for_edit_field)
 
 @dp.message(Form.waiting_for_edit_field)
 async def process_edit_field(msg: types.Message, state: FSMContext):
     field = clean_user_input(msg.text).lower()
     if field not in ["чай", "начало", "конец", "выручка"]:
-        await msg.answer("❌ Такого параметра нет. Используй: чай, начало, конец, выручка")
+        await msg.answer("❌ Такого параметра нет, котик! Используй: чай, начало, конец, выручка 🐾")
         await state.clear()
         return
     
@@ -758,9 +959,9 @@ async def process_edit_value(msg: types.Message, state: FSMContext):
     
     success = await update_value(date_msg, field, value)
     if success:
-        await msg.answer(f"✅ {field} изменен на {value} для даты {date_msg} 🩷")
+        await msg.answer(f"✅ {field} изменен на {value} для даты {date_msg}! 🩷\n\nМолодец, котик! 🌟")
     else:
-        await msg.answer("❌ Ошибка: не удалось сохранить изменения")
+        await msg.answer("❌ Ошибка: не удалось сохранить изменения, пушистик! 🐾")
     
     await state.clear()
 
@@ -768,7 +969,7 @@ async def process_edit_value(msg: types.Message, state: FSMContext):
 @dp.message(Command("profit"))
 async def profit_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
-    await msg.answer("Введи дату (ДД.ММ.ГГГГ):")
+    await msg.answer("Введи дату, котик! (ДД.ММ.ГГГГ):")
     await state.set_state(Form.waiting_for_profit_date)
 
 @dp.message(Form.waiting_for_profit_date)
@@ -779,24 +980,24 @@ async def process_profit_date(msg: types.Message, state: FSMContext):
     try:
         day = datetime.strptime(clean_date, "%d.%m.%Y").date()
         if day > dt.today():
-            await msg.answer("❌ Этот день ещё не наступил 🐾")
+            await msg.answer("❌ Этот день ещё не наступил, котик! 🐾")
             await state.clear()
             return
     except ValueError:
-        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ")
+        await msg.answer("❌ Неверный формат даты, пушистик! Используй ДД.ММ.ГГГГ")
         await state.clear()
         return
 
     # Проверяем существование смены
     exists = await check_shift_exists(clean_date)
     if not exists:
-        await msg.answer(f"❌ Смена на дату {clean_date} не найдена. Сначала добавь смену через /add_shift")
+        await msg.answer(f"❌ Смена на дату {clean_date} не найдена, котик! Сначала добавь смену через /add_shift 🐾")
         await state.clear()
         return
 
     profit_value = await get_profit(clean_date)
     if profit_value is None:
-        await msg.answer("❌ Нет данных о прибыли на эту дату 😿")
+        await msg.answer("❌ Нет данных о прибыли на эту дату, котик! 😿")
         await state.clear()
         return
 
@@ -809,11 +1010,11 @@ async def process_profit_date(msg: types.Message, state: FSMContext):
 
     # Обновленные сообщения с учетом новой формулы
     if profit_float < 4000:
-        text = f"📊 Твоя прибыль за {clean_date}: {profit_float:.2f}₽.\nНе расстраивайся, котик 🐾 — ты отлично поработала!"
+        text = f"📊 Твоя прибыль за {clean_date}: {profit_float:.2f}₽.\nНе расстраивайся, котик 🐾 — ты отлично поработала! Каждая смена — это опыт! 🌸"
     elif 4000 <= profit_float <= 6000:
-        text = f"📊 Твоя прибыль за {clean_date}: {profit_float:.2f}₽.\nНеплохая смена 😺 — беги радовать себя чем-то вкусным!"
+        text = f"📊 Твоя прибыль за {clean_date}: {profit_float:.2f}₽.\nНеплохая смена, пушистик 😺 — беги радовать себя чем-то вкусным! Ты это заслужила! 💖"
     else:
-        text = f"📊 Твоя прибыль за {clean_date}: {profit_float:.2f}₽.\nТы просто суперстар 🌟 — ещё немного, и миллион твой!"
+        text = f"📊 Твоя прибыль за {clean_date}: {profit_float:.2f}₽.\nТы просто суперстар 🌟 — ещё немного, и миллион твой! Горжусь тобой! 🎉"
     
     await msg.answer(text)
     await state.clear()
@@ -824,14 +1025,14 @@ async def stats_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
     
     if storage_type == 'google_sheets':
-        await msg.answer("❌ Статистика временно недоступна при использовании Google Sheets. Используй SQLite хранилище.")
+        await msg.answer("❌ Статистика временно недоступна при использовании Google Sheets, котик! Используй SQLite хранилище 🐾")
         return
         
     if not db_manager:
-        await msg.answer("❌ Модуль статистики недоступен")
+        await msg.answer("❌ Модуль статистики недоступен, пушистик! 🐾")
         return
         
-    await msg.answer("Введи начальную дату для статистики (ДД.ММ.ГГГГ):")
+    await msg.answer("Введи начальную дату для статистики, котик! (ДД.ММ.ГГГГ):")
     await state.set_state(Form.waiting_for_stats_start)
 
 @dp.message(Form.waiting_for_stats_start)
@@ -841,10 +1042,10 @@ async def process_stats_start(msg: types.Message, state: FSMContext):
     try:
         datetime.strptime(clean_date, "%d.%m.%Y").date()
         await state.update_data(stats_start=clean_date)
-        await msg.answer("Введи конечную дату (ДД.ММ.ГГГГ):")
+        await msg.answer("Введи конечную дату, котик! (ДД.ММ.ГГГГ):")
         await state.set_state(Form.waiting_for_stats_end)
     except ValueError:
-        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ")
+        await msg.answer("❌ Неверный формат даты, пушистик! Используй ДД.ММ.ГГГГ")
         await state.clear()
 
 @dp.message(Form.waiting_for_stats_end)
@@ -860,24 +1061,25 @@ async def process_stats_end(msg: types.Message, state: FSMContext):
         stats = await db_manager.get_statistics(start_date, end_date)
         
         if not stats:
-            await msg.answer("❌ Нет данных за указанный период")
+            await msg.answer("❌ Нет данных за указанный период, котик! 🐾")
             await state.clear()
             return
         
         # Форматируем статистику
-        text = f"📊 Статистика за период {start_date} - {end_date}:\n\n"
-        text += f"• Количество смен: {stats['shift_count']}\n"
-        text += f"• Общая выручка: {stats['total_revenue']:.2f}₽\n"
-        text += f"• Общие чаевые: {stats['total_tips']:.2f}₽\n"
-        text += f"• Общая прибыль: {stats['total_profit']:.2f}₽\n"
-        text += f"• Средняя выручка за смену: {stats['avg_revenue']:.2f}₽\n"
-        text += f"• Средние чаевые за смену: {stats['avg_tips']:.2f}₽\n"
-        text += f"• Средняя прибыль за смену: {stats['avg_profit']:.2f}₽"
+        text = f"📊 **Статистика за период {start_date} - {end_date}:**\n\n"
+        text += f"• Количество смен: {stats['shift_count']} 🌸\n"
+        text += f"• Общая выручка: {stats['total_revenue']:.2f}₽ 💰\n"
+        text += f"• Общие чаевые: {stats['total_tips']:.2f}₽ ☕️\n"
+        text += f"• Общая прибыль: {stats['total_profit']:.2f}₽ 🎉\n"
+        text += f"• Средняя выручка за смену: {stats['avg_revenue']:.2f}₽ ✨\n"
+        text += f"• Средние чаевые за смену: {stats['avg_tips']:.2f}₽ 💖\n"
+        text += f"• Средняя прибыль за смену: {stats['avg_profit']:.2f}₽ 🐾\n\n"
+        text += f"**Отличные результаты, котик! Горжусь тобой!** 🌟"
         
         await msg.answer(text)
         
     except ValueError:
-        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ")
+        await msg.answer("❌ Неверный формат даты, пушистик! Используй ДД.ММ.ГГГГ")
     
     await state.clear()
 
@@ -887,14 +1089,14 @@ async def export_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
     
     if storage_type == 'google_sheets':
-        await msg.answer("❌ Экспорт временно недоступен при использовании Google Sheets. Используй SQLite хранилище.")
+        await msg.answer("❌ Экспорт временно недоступен при использовании Google Sheets, котик! Используй SQLite хранилище 🐾")
         return
         
     if not db_manager:
-        await msg.answer("❌ Модуль экспорта недоступен")
+        await msg.answer("❌ Модуль экспорта недоступен, пушистик! 🐾")
         return
         
-    await msg.answer("Введи начальную дату для экспорта (ДД.ММ.ГГГГ):")
+    await msg.answer("Введи начальную дату для экспорта, котик! (ДД.ММ.ГГГГ):")
     await state.set_state(Form.waiting_for_export_start)
 
 @dp.message(Form.waiting_for_export_start)
@@ -904,10 +1106,10 @@ async def process_export_start(msg: types.Message, state: FSMContext):
     try:
         datetime.strptime(clean_date, "%d.%m.%Y").date()
         await state.update_data(export_start=clean_date)
-        await msg.answer("Введи конечную дату (ДД.ММ.ГГГГ):")
+        await msg.answer("Введи конечную дату, котик! (ДД.ММ.ГГГГ):")
         await state.set_state(Form.waiting_for_export_end)
     except ValueError:
-        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ")
+        await msg.answer("❌ Неверный формат даты, пушистик! Используй ДД.ММ.ГГГГ")
         await state.clear()
 
 @dp.message(Form.waiting_for_export_end)
@@ -923,12 +1125,12 @@ async def process_export_end(msg: types.Message, state: FSMContext):
         shifts = await db_manager.get_shifts_in_period(start_date, end_date)
         
         if not shifts:
-            await msg.answer("❌ Нет данных за указанный период")
+            await msg.answer("❌ Нет данных за указанный период, котик! 🐾")
             await state.clear()
             return
         
         # Формируем экспорт
-        export_text = f"Экспорт данных за период {start_date} - {end_date}\n\n"
+        export_text = f"**Экспорт данных за период {start_date} - {end_date}**\n\n"
         
         total_revenue = 0
         total_tips = 0
@@ -942,10 +1144,11 @@ async def process_export_end(msg: types.Message, state: FSMContext):
             total_revenue += shift['revenue']
             total_tips += shift['tips']
         
-        export_text += f"ИТОГО:\n"
-        export_text += f"Выручка: {total_revenue:.2f}₽\n"
-        export_text += f"Чаевые: {total_tips:.2f}₽\n"
-        export_text += f"Общая прибыль: {total_revenue + total_tips:.2f}₽"
+        export_text += f"**ИТОГО:**\n"
+        export_text += f"Выручка: {total_revenue:.2f}₽ 💰\n"
+        export_text += f"Чаевые: {total_tips:.2f}₽ ☕️\n"
+        export_text += f"Общая прибыль: {total_revenue + total_tips:.2f}₽ 🎉\n\n"
+        export_text += f"**Отличная работа, котик!** 🌟"
         
         # Разбиваем на части если сообщение слишком длинное
         if len(export_text) > 4000:
@@ -957,7 +1160,7 @@ async def process_export_end(msg: types.Message, state: FSMContext):
             await msg.answer(export_text)
         
     except ValueError:
-        await msg.answer("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ")
+        await msg.answer("❌ Неверный формат даты, пушистик! Используй ДД.ММ.ГГГГ")
     
     await state.clear()
 
@@ -965,7 +1168,7 @@ async def process_export_end(msg: types.Message, state: FSMContext):
 async def echo(message: types.Message):
     """Обработка любых других сообщений"""
     if not check_access(message): return
-    await message.answer("Не понимаю эту команду 😿\nИспользуй /help для списка команд")
+    await message.answer("Не понимаю эту команду, котик! 😿\nИспользуй /help для списка команд 🐾")
 
 async def main():
     try:
