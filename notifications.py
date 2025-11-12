@@ -7,8 +7,8 @@ import sheets
 
 logger = logging.getLogger(__name__)
 
-async def check_incomplete_shifts(bot):
-    """Проверяем смены без выручки или чаевых"""
+async def check_incomplete_shifts():
+    """Проверяем смены без выручки или чаевых за последние 7 дней"""
     try:
         if not USER_ID:
             return []
@@ -25,47 +25,34 @@ async def check_incomplete_shifts(bot):
             
             # Проверяем существование смены
             if await sheets.has_shift_today(date_str):
-                # Получаем данные смены
-                try:
-                    # Используем существующую функцию для получения данных
-                    profit = await sheets.get_profit(date_str)
-                    if profit:
-                        # Если прибыль очень маленькая (значит, нет выручки и чаевых)
-                        # или получаем данные через дополнительный метод
-                        shift_data = await _get_shift_data(date_str)
-                        if shift_data and (not shift_data.get('revenue') or not shift_data.get('tips')):
-                            incomplete_shifts.append({
-                                'date': date_str,
-                                'revenue': shift_data.get('revenue'),
-                                'tips': shift_data.get('tips')
-                            })
-                except Exception as e:
-                    logger.error(f"❌ Error checking shift data for {date_str}: {e}")
+                # Получаем полные данные смены
+                shift_data = await sheets.get_shift_data(date_str)
+                if shift_data:
+                    revenue = shift_data.get('revenue', '')
+                    tips = shift_data.get('tips', '')
+                    
+                    # Проверяем, заполнены ли выручка и чаевые
+                    is_revenue_filled = revenue and str(revenue).strip() != '' and str(revenue) != '0'
+                    is_tips_filled = tips and str(tips).strip() != '' and str(tips) != '0'
+                    
+                    if not is_revenue_filled or not is_tips_filled:
+                        incomplete_shifts.append({
+                            'date': date_str,
+                            'revenue': revenue if is_revenue_filled else None,
+                            'tips': tips if is_tips_filled else None,
+                            'missing_data': []
+                        })
+                        
+                        if not is_revenue_filled:
+                            incomplete_shifts[-1]['missing_data'].append('выручка')
+                        if not is_tips_filled:
+                            incomplete_shifts[-1]['missing_data'].append('чаевые')
         
         return incomplete_shifts
         
     except Exception as e:
         logger.error(f"❌ Error checking incomplete shifts: {e}")
         return []
-
-async def _get_shift_data(date_str):
-    """Вспомогательная функция для получения данных смены"""
-    try:
-        # Временно используем существующие функции для получения данных
-        # В будущем можно добавить отдельный метод в sheets.py
-        profit_value = await sheets.get_profit(date_str)
-        if profit_value:
-            # Если прибыль есть, но мы хотим проверить отдельно выручку и чаевые
-            # Пока возвращаем минимальные данные
-            return {
-                'date': date_str,
-                'revenue': None,  # Нужно будет добавить метод для получения этих данных
-                'tips': None
-            }
-        return None
-    except Exception as e:
-        logger.error(f"❌ Error getting shift data: {e}")
-        return None
 
 async def send_shift_reminder(bot):
     """Напоминание о смене в 10:00 с проверкой незаполненных данных"""
@@ -85,24 +72,31 @@ async def send_shift_reminder(bot):
         # Проверяем сегодняшнюю смену
         if await sheets.has_shift_today(today_str):
             messages.append(
-                f"🌞 Доброе утро!\n"
+                f"🌞 Доброе утро, котофей!\n"
                 f"Сегодня у тебя смена ({today_str}) 💪\n"
-                f"Не забудь взять хорошее настроение и кофеек ☕️"
+                f"Не забудь взять хорошее настроение и вкусно покушать🫡"
             )
-            logger.info(f"✅ Sent morning reminder for {today_str}")
+            logger.info(f"✅ Found today's shift: {today_str}")
         else:
             logger.info(f"ℹ️ No shift found for {today_str}")
 
         # Проверяем незаполненные данные за предыдущие смены
-        incomplete_shifts = await check_incomplete_shifts(bot)
+        incomplete_shifts = await check_incomplete_shifts()
         
         if incomplete_shifts:
-            incomplete_dates = [shift['date'] for shift in incomplete_shifts[:3]]  # Показываем только последние 3
+            # Группируем по датам и показываем только последние 3
+            incomplete_dates = []
+            for shift in incomplete_shifts[:3]:
+                date_str = shift['date']
+                missing = " и ".join(shift['missing_data'])
+                incomplete_dates.append(f"• {date_str} (нет {missing})")
+            
             messages.append(
-                f"📝 Напоминание о незаполненных данных:\n"
+                f"📝 Внимание!"
+                f"Котику пришло напоминание о незаполненных данных:\n"
                 f"Обнаружены смены без выручки или чаевых:\n"
-                f"{', '.join(incomplete_dates)}\n"
-                f"Пожалуйста, заполни данные с помощью команд:\n"
+                f"{chr(10).join(incomplete_dates)}\n"
+                f"\nПожалуйста, заполни данные с помощью команд:\n"
                 f"• /revenue — ввести выручку\n"
                 f"• /tips — ввести чаевые"
             )
@@ -111,6 +105,7 @@ async def send_shift_reminder(bot):
         if messages:
             message_text = "\n\n".join(messages)
             await bot.send_message(USER_ID, message_text)
+            logger.info("✅ Morning reminder sent successfully")
         else:
             logger.info("ℹ️ No reminders to send")
             
@@ -132,12 +127,14 @@ async def send_evening_prompt(bot):
         if await sheets.has_shift_today(today):
             await bot.send_message(
                 USER_ID,
-                f"🌙 Привет!\n"
-                f"Смена {today} подошла к концу (или скоро подойдет) 💫\n"
+                f"🌙 Привет, работничек!\n"
+                f"Надеюсь день прошел отлично!"
+                f"Смена {today} подоходит к концу (или уже закончилась) 💫\n"
                 f"Пожалуйста, введи данные за день — выручку и чаевые ☕️💰\n"
                 f"Используй команды:\n"
                 f"→ /revenue — чтобы ввести выручку\n"
                 f"→ /tips — чтобы ввести сумму чаевых"
+                f"Твой любимый <3"
             )
             logger.info(f"✅ Sent evening reminder for {today}")
         else:
@@ -168,20 +165,26 @@ async def send_weekly_summary(bot):
         end_str = end_date.strftime("%d.%m.%Y")
         
         # Проверяем незаполненные данные за неделю
-        incomplete_shifts = await check_incomplete_shifts(bot)
+        incomplete_shifts = await check_incomplete_shifts()
         weekly_incomplete = [s for s in incomplete_shifts 
                            if start_date <= datetime.strptime(s['date'], "%d.%m.%Y").date() <= end_date]
         
         message_text = (
-            f"📊 Воскресный вечер — время подвести итоги недели!\n"
+            f"📊 Воскресный вечер — в церковь не ходим, но самое время подвести итоги недели!\n"
             f"Период: {start_str} - {end_str}\n"
         )
         
         if weekly_incomplete:
-            incomplete_dates = [shift['date'] for shift in weekly_incomplete]
+            incomplete_dates = []
+            for shift in weekly_incomplete:
+                date_str = shift['date']
+                missing = " и ".join(shift['missing_data'])
+                incomplete_dates.append(f"• {date_str} (нет {missing})")
+            
             message_text += (
-                f"\n⚠️ Обрати внимание:\n"
-                f"Есть незаполненные смены: {', '.join(incomplete_dates)}\n"
+                f"\n⚠️ Котик, обрати внимание:\n"
+                f"Есть незаполненные смены:\n"
+                f"{chr(10).join(incomplete_dates)}\n"
                 f"Не забудь внести данные до начала новой недели!"
             )
         else:
@@ -201,19 +204,25 @@ async def send_data_completion_reminder(bot):
         if not USER_ID:
             return
 
-        incomplete_shifts = await check_incomplete_shifts(bot)
+        incomplete_shifts = await check_incomplete_shifts()
         
         if incomplete_shifts:
-            incomplete_dates = [shift['date'] for shift in incomplete_shifts[:5]]  # Показываем до 5 дат
+            # Группируем по датам и показываем до 5
+            incomplete_dates = []
+            for shift in incomplete_shifts[:5]:
+                date_str = shift['date']
+                missing = " и ".join(shift['missing_data'])
+                incomplete_dates.append(f"• {date_str} (нет {missing})")
             
             await bot.send_message(
                 USER_ID,
                 f"📋 Напоминание о заполнении данных:\n"
                 f"У тебя есть {len(incomplete_shifts)} смен без выручки или чаевых.\n"
-                f"Последние даты: {', '.join(incomplete_dates)}\n"
+                f"Последние даты:\n"
+                f"{chr(10).join(incomplete_dates)}\n"
                 f"\nКоманды для заполнения:\n"
-                f"• /revenue <дата> <сумма> — выручка\n"
-                f"• /tips <дата> <сумма> — чаевые\n"
+                f"• /revenue — ввести выручку\n"
+                f"• /tips — ввести чаевые\n"
                 f"• /edit — изменить другие данные"
             )
             logger.info(f"✅ Sent data completion reminder for {len(incomplete_shifts)} shifts")
