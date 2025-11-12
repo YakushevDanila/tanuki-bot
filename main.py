@@ -199,12 +199,12 @@ async def process_date(msg: types.Message, state: FSMContext):
     # Проверяем, существует ли уже смена с этой датой
     exists = await check_shift_exists(clean_date)
     if exists:
-        await state.update_data(date=clean_date)
+        await state.update_data(date=clean_date, is_overwrite=True)
         await msg.answer(f"❌ Смена на дату {clean_date} уже существует!\n"
                         "Хочешь перезаписать ее? (да/нет)")
         await state.set_state(Form.waiting_for_overwrite_confirm)
     else:
-        await state.update_data(date=clean_date)
+        await state.update_data(date=clean_date, is_overwrite=False)
         await msg.answer("Введи время начала смены (чч:мм):")
         await state.set_state(Form.waiting_for_start)
 
@@ -253,15 +253,33 @@ async def process_end(msg: types.Message, state: FSMContext):
         await state.clear()
         return
     
-    success = await add_shift(date_msg, start, end)
+    # Передаем флаг перезаписи в функцию add_shift
+    is_overwrite = user_data.get('is_overwrite', False)
+    success = await add_shift(date_msg, start, end, reset_financials=is_overwrite)
+    
     if success:
-        await msg.answer(f"✅ Смена {date_msg} ({start}-{end}) добавлена 🩷")
+        # Если это перезапись, сбрасываем финансовые данные и предлагаем ввести заново
+        if is_overwrite:
+            await msg.answer(
+                f"✅ Смена {date_msg} ({start}-{end}) перезаписана! 🩷\n\n"
+                f"Теперь нужно заново ввести финансовые данные:\n"
+                f"1. Введи сумму выручки за этот день:"
+            )
+            # Сохраняем данные для последующего ввода
+            await state.update_data(
+                revenue_date=date_msg,
+                tips_date=date_msg,
+                is_overwrite_flow=True
+            )
+            await state.set_state(Form.waiting_for_revenue)
+        else:
+            await msg.answer(f"✅ Смена {date_msg} ({start}-{end}) добавлена 🩷")
+            await state.clear()
     else:
         await msg.answer("❌ Ошибка при добавлении смены")
-    
-    await state.clear()
+        await state.clear()
 
-# REVENUE FLOW
+# REVENUE FLOW - обновленная версия для перезаписи
 @dp.message(Command("revenue"))
 async def revenue_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
@@ -299,13 +317,20 @@ async def process_revenue(msg: types.Message, state: FSMContext):
     
     success = await update_value(date_msg, "выручка", rev)
     if success:
-        await msg.answer(f"✅ Выручка {rev}₽ обновлена для даты {date_msg} 💰✨")
+        # Если это поток перезаписи, переходим к вводу чаевых
+        if user_data.get('is_overwrite_flow'):
+            # Сохраняем выручку в состоянии для финального сообщения
+            await state.update_data(revenue=rev)
+            await msg.answer(f"✅ Выручка {rev}₽ обновлена! 💰✨\n\nТеперь введи сумму чаевых:")
+            await state.set_state(Form.waiting_for_tips)
+        else:
+            await msg.answer(f"✅ Выручка {rev}₽ обновлена для даты {date_msg} 💰✨")
+            await state.clear()
     else:
         await msg.answer("❌ Не удалось обновить выручку")
-    
-    await state.clear()
+        await state.clear()
 
-# TIPS FLOW
+# TIPS FLOW - обновленная версия для перезаписи
 @dp.message(Command("tips"))
 async def tips_start(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
@@ -343,9 +368,21 @@ async def process_tips(msg: types.Message, state: FSMContext):
     
     success = await update_value(date_msg, "чай", tips_amount)
     if success:
-        await msg.answer(f"✅ Чаевые {tips_amount}₽ добавлены для даты {date_msg} ☕️💖")
-    else:
-        await msg.answer("❌ Не удалось добавить чаевые")
+        if user_data.get('is_overwrite_flow'):
+            # Получаем все данные для финального сообщения
+            start = user_data.get('start', '?')
+            end = user_data.get('end', '?')
+            revenue = user_data.get('revenue', '?')
+            
+            await msg.answer(
+                f"✅ Чаевые {tips_amount}₽ добавлены! ☕️💖\n\n"
+                f"🎉 Все данные за {date_msg} успешно перезаписаны!\n"
+                f"• Время: {start}-{end}\n"
+                f"• Выручка: {revenue}₽\n"
+                f"• Чаевые: {tips_amount}₽"
+            )
+        else:
+            await msg.answer(f"✅ Чаевые {tips_amount}₽ добавлены для даты {date_msg} ☕️💖")
     
     await state.clear()
 
