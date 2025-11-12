@@ -389,6 +389,40 @@ class GoogleSheetsManager:
             logger.error(f"❌ Error checking shift existence: {e}")
             return False
 
+    async def has_shift_today(self, date_msg):
+        """Check if shift exists for given date (for notifications)"""
+        return await self.check_shift_exists(date_msg)
+
+    async def get_all_shifts(self):
+        """Get all shifts from spreadsheet (for future statistics)"""
+        if not self.initialized:
+            logger.error("Google Sheets not initialized")
+            return []
+
+        try:
+            # Get all records except header
+            records = await asyncio.to_thread(self.worksheet.get_all_records)
+            shifts = []
+            
+            for record in records:
+                if record.get('Дата'):  # Only include rows with date
+                    shifts.append({
+                        'date': record.get('Дата', ''),
+                        'start': record.get('Начало', ''),
+                        'end': record.get('Конец', ''),
+                        'hours': record.get('Часы', 0),
+                        'revenue': record.get('Выручка', 0),
+                        'tips': record.get('Чаевые', 0),
+                        'profit': record.get('Прибыль', 0)
+                    })
+            
+            logger.info(f"📊 Retrieved {len(shifts)} shifts from Google Sheets")
+            return shifts
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting all shifts: {e}")
+            return []
+
 # Global instance
 sheets_manager = GoogleSheetsManager()
 
@@ -404,3 +438,13 @@ async def get_profit(date_msg):
 
 async def check_shift_exists(date_msg):
     return await sheets_manager.check_shift_exists(date_msg)
+
+# New function for notifications
+async def has_shift_today(date_msg):
+    """Check if shift exists for today (for notifications)"""
+    return await sheets_manager.has_shift_today(date_msg)
+
+# Additional function for future statistics
+async def get_all_shifts():
+    """Get all shifts (for future statistics implementation)"""
+    return await sheets_manager.get_all_shifts()
