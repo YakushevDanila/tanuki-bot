@@ -69,6 +69,9 @@ def get_main_keyboard(user_id: int):
                 ],
                 [
                     KeyboardButton(text="🌙 Неделя"), 
+                    KeyboardButton(text="🗑️ Удалить")
+                ],
+                [
                     KeyboardButton(text="🌸 Помощь")
                 ]
             ],
@@ -92,6 +95,7 @@ def get_main_keyboard(user_id: int):
                     KeyboardButton(text="🔄 Изменить")
                 ],
                 [
+                    KeyboardButton(text="🗑️ Удалить"),
                     KeyboardButton(text="🌸 Помощь")
                 ]
             ],
@@ -146,6 +150,18 @@ def get_edit_keyboard():
             ],
             [
                 KeyboardButton(text="❌ Отмена")
+            ]
+        ],
+        resize_keyboard=True
+    )
+
+def get_delete_confirmation_keyboard():
+    """Клавиатура для подтверждения удаления"""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="✅ Да, удалить"), 
+                KeyboardButton(text="❌ Нет, отмена")
             ]
         ],
         resize_keyboard=True
@@ -230,13 +246,15 @@ class Form(StatesGroup):
     waiting_for_shift_data = State()
     waiting_for_multiple_confirmation = State()
     onboarding_step = State()
+    waiting_for_delete_date = State()
+    waiting_for_delete_confirmation = State()
 
 # ВЫБОР ХРАНИЛИЩА
 storage_type = os.getenv('STORAGE_TYPE', 'google_sheets').lower()
 
 if storage_type == 'google_sheets':
     try:
-        from sheets import add_shift, update_value, get_profit, check_shift_exists
+        from sheets import add_shift, update_value, get_profit, check_shift_exists, delete_shift, get_shift_data
         logger.info("✅ Using Google Sheets storage")
     except Exception as e:
         logger.error(f"❌ Failed to use Google Sheets: {e}")
@@ -247,6 +265,8 @@ if storage_type == 'google_sheets':
             update_value = storage.update_value
             get_profit = storage.get_profit
             check_shift_exists = storage.check_shift_exists
+            delete_shift = storage.delete_shift
+            get_shift_data = storage.get_shift_data
             logger.info("✅ Fallback to SQLite storage")
         except ImportError:
             logger.error("❌ No storage backend available")
@@ -257,6 +277,8 @@ else:
     update_value = storage.update_value
     get_profit = storage.get_profit
     check_shift_exists = storage.check_shift_exists
+    delete_shift = storage.delete_shift
+    get_shift_data = storage.get_shift_data
     logger.info("✅ Using SQLite storage")
 
 # Импортируем функции для статистики и экспорта (только для SQLite)
@@ -324,7 +346,9 @@ async def detailed_onboarding(msg: types.Message, state: FSMContext):
         "✨ *💖 Чаевые*\n"
         "Не забудь про чаевые! Они тоже считаются в прибыль 💫\n\n"
         "✨ *📊 Прибыль*\n"
-        "Узнай сколько ты заработала за любой день"
+        "Узнай сколько ты заработала за любой день\n\n"
+        "✨ *🗑️ Удалить*\n"
+        "Удали ошибочную смену (будь осторожна! ❤️)"
     )
     await msg.answer(step1_text, parse_mode="Markdown")
     await asyncio.sleep(2)
@@ -413,7 +437,6 @@ async def start_cmd(msg: types.Message, state: FSMContext):
     if not check_access(msg): return
     
     # Для новых пользователей показываем онбординг
-    # Для простоты будем показывать онбординг при каждом /start, но можно добавить логику проверки первого запуска
     await start_onboarding(msg, state)
 
 @dp.message(Command("onboarding"))
@@ -457,7 +480,8 @@ async def help_cmd(msg: types.Message):
         "• *💖 Чаевые* - учесть чаевые\n"
         "• *📊 Прибыль* - узнать заработок за день\n"
         "• *🎯 Сегодня* - быстрый ввод за сегодня\n"
-        "• *🔄 Изменить* - исправить данные\n\n"
+        "• *🔄 Изменить* - исправить данные\n"
+        "• *🗑️ Удалить* - удалить смену (осторожно!)\n\n"
         
         "💫 *ПРИМЕРЫ ИСПОЛЬЗОВАНИЯ:*\n"
         "• *Добавить смену:* \"15.03.2024 9-18\" или \"10:00-19:00\"\n"
@@ -532,6 +556,16 @@ async def edit_button(msg: types.Message, state: FSMContext):
     )
     await state.set_state(Form.waiting_for_edit_date)
 
+@dp.message(F.text == "🗑️ Удалить")
+async def delete_button(msg: types.Message, state: FSMContext):
+    """Обработка кнопки удаления"""
+    await msg.answer(
+        "Удаляем смену! 🗑️\n\n"
+        "Введи дату смены для удаления (ДД.ММ.ГГГГ):",
+        reply_markup=get_date_keyboard()
+    )
+    await state.set_state(Form.waiting_for_delete_date)
+
 @dp.message(F.text == "📈 Статистика")
 async def stats_button(msg: types.Message, state: FSMContext):
     """Обработка кнопки статистики"""
@@ -561,8 +595,263 @@ async def cancel_button(msg: types.Message, state: FSMContext):
     """Обработка кнопки отмены"""
     await cancel_action(msg, state)
 
-# [ОСТАЛЬНЫЕ ФУНКЦИИ ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ - те же самые обработчики состояний, что и в предыдущей версии]
-# [Добавьте сюда все остальные обработчики из предыдущего кода: process_date, process_start, process_revenue_date, и т.д.]
+# Обработка быстрых дат
+@dp.message(Form.waiting_for_date, F.text == "📅 Сегодня")
+@dp.message(Form.waiting_for_revenue_date, F.text == "📅 Сегодня")
+@dp.message(Form.waiting_for_tips_date, F.text == "📅 Сегодня")
+@dp.message(Form.waiting_for_profit_date, F.text == "📅 Сегодня")
+@dp.message(Form.waiting_for_edit_date, F.text == "📅 Сегодня")
+@dp.message(Form.waiting_for_delete_date, F.text == "📅 Сегодня")
+async def process_today_date(msg: types.Message, state: FSMContext):
+    """Обработка быстрого выбора сегодняшней даты"""
+    today = datetime.now().strftime("%d.%m.%Y")
+    
+    current_state = await state.get_state()
+    
+    if current_state == Form.waiting_for_date:
+        await state.update_data(date=today, is_overwrite=False)
+        await msg.answer(
+            "Введи время смены в формате:\n"
+            "<начало>-<конец>\n\n"
+            "Примеры:\n"
+            "• 9-18\n"
+            "• 10:00-19:00\n"
+            "• 0900-1800",
+            reply_markup=get_cancel_keyboard()
+        )
+        await state.set_state(Form.waiting_for_start)
+    
+    elif current_state == Form.waiting_for_revenue_date:
+        await state.update_data(revenue_date=today)
+        await msg.answer("Введи сумму выручки (только число):", reply_markup=get_cancel_keyboard())
+        await state.set_state(Form.waiting_for_revenue)
+    
+    elif current_state == Form.waiting_for_tips_date:
+        await state.update_data(tips_date=today)
+        await msg.answer("Введи сумму чаевых (число):", reply_markup=get_cancel_keyboard())
+        await state.set_state(Form.waiting_for_tips)
+    
+    elif current_state == Form.waiting_for_profit_date:
+        # Проверяем существование смены
+        exists = await check_shift_exists(today)
+        if not exists:
+            await msg.answer(f"❌ Смена на сегодня ({today}) не найдена, котик!", reply_markup=get_main_keyboard(msg.from_user.id))
+            await state.clear()
+            return
+        
+        profit_value = await get_profit(today)
+        if profit_value is None:
+            await msg.answer("❌ Нет данных о прибыли на сегодня, котик! 😿", reply_markup=get_main_keyboard(msg.from_user.id))
+            await state.clear()
+            return
+        
+        await show_profit_result(msg, today, profit_value)
+        await state.clear()
+    
+    elif current_state == Form.waiting_for_edit_date:
+        await state.update_data(edit_date=today)
+        await msg.answer(
+            "Что редактируем, пушистик?",
+            reply_markup=get_edit_keyboard()
+        )
+        await state.set_state(Form.waiting_for_edit_field)
+    
+    elif current_state == Form.waiting_for_delete_date:
+        await process_delete_date_with_data(msg, state, today)
+
+@dp.message(Form.waiting_for_date, F.text == "📅 Вчера")
+@dp.message(Form.waiting_for_revenue_date, F.text == "📅 Вчера")
+@dp.message(Form.waiting_for_tips_date, F.text == "📅 Вчера")
+@dp.message(Form.waiting_for_profit_date, F.text == "📅 Вчера")
+@dp.message(Form.waiting_for_edit_date, F.text == "📅 Вчера")
+@dp.message(Form.waiting_for_delete_date, F.text == "📅 Вчера")
+async def process_yesterday_date(msg: types.Message, state: FSMContext):
+    """Обработка быстрого выбора вчерашней даты"""
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
+    
+    current_state = await state.get_state()
+    
+    if current_state == Form.waiting_for_date:
+        await state.update_data(date=yesterday, is_overwrite=False)
+        await msg.answer(
+            "Введи время смены в формате:\n"
+            "<начало>-<конец>\n\n"
+            "Примеры:\n"
+            "• 9-18\n"
+            "• 10:00-19:00\n"
+            "• 0900-1800",
+            reply_markup=get_cancel_keyboard()
+        )
+        await state.set_state(Form.waiting_for_start)
+    
+    elif current_state == Form.waiting_for_revenue_date:
+        await state.update_data(revenue_date=yesterday)
+        await msg.answer("Введи сумму выручки (только число):", reply_markup=get_cancel_keyboard())
+        await state.set_state(Form.waiting_for_revenue)
+    
+    elif current_state == Form.waiting_for_tips_date:
+        await state.update_data(tips_date=yesterday)
+        await msg.answer("Введи сумму чаевых (число):", reply_markup=get_cancel_keyboard())
+        await state.set_state(Form.waiting_for_tips)
+    
+    elif current_state == Form.waiting_for_profit_date:
+        # Проверяем существование смены
+        exists = await check_shift_exists(yesterday)
+        if not exists:
+            await msg.answer(f"❌ Смена на вчера ({yesterday}) не найдена, котик!", reply_markup=get_main_keyboard(msg.from_user.id))
+            await state.clear()
+            return
+        
+        profit_value = await get_profit(yesterday)
+        if profit_value is None:
+            await msg.answer("❌ Нет данных о прибыли на вчера, котик! 😿", reply_markup=get_main_keyboard(msg.from_user.id))
+            await state.clear()
+            return
+        
+        await show_profit_result(msg, yesterday, profit_value)
+        await state.clear()
+    
+    elif current_state == Form.waiting_for_edit_date:
+        await state.update_data(edit_date=yesterday)
+        await msg.answer(
+            "Что редактируем, пушистик?",
+            reply_markup=get_edit_keyboard()
+        )
+        await state.set_state(Form.waiting_for_edit_field)
+    
+    elif current_state == Form.waiting_for_delete_date:
+        await process_delete_date_with_data(msg, state, yesterday)
+
+# Обработка полей редактирования через кнопки
+@dp.message(Form.waiting_for_edit_field, F.text == "🕐 Начало")
+@dp.message(Form.waiting_for_edit_field, F.text == "🕘 Конец")
+@dp.message(Form.waiting_for_edit_field, F.text == "💰 Выручка")
+@dp.message(Form.waiting_for_edit_field, F.text == "💖 Чаевые")
+async def process_edit_field_button(msg: types.Message, state: FSMContext):
+    """Обработка выбора поля редактирования через кнопки"""
+    field_map = {
+        "🕐 Начало": "начало",
+        "🕘 Конец": "конец", 
+        "💰 Выручка": "выручка",
+        "💖 Чаевые": "чай"
+    }
+    
+    field = field_map[msg.text]
+    await state.update_data(edit_field=field)
+    
+    field_names = {
+        "начало": "время начала (например: 09:00)",
+        "конец": "время окончания (например: 18:00)", 
+        "выручка": "сумму выручки",
+        "чай": "сумму чаевых"
+    }
+    
+    await msg.answer(
+        f"Введи новое значение для {field_names[field]}:",
+        reply_markup=get_cancel_keyboard()
+    )
+    await state.set_state(Form.waiting_for_edit_value)
+
+# ОБРАБОТКА УДАЛЕНИЯ СМЕН
+@dp.message(Form.waiting_for_delete_date)
+async def process_delete_date(msg: types.Message, state: FSMContext):
+    """Обработка ввода даты для удаления"""
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    clean_date = clean_user_input(msg.text)
+    
+    # Проверяем валидность даты
+    try:
+        datetime.strptime(clean_date, "%d.%m.%Y").date()
+    except ValueError:
+        await msg.answer(
+            "❌ Неверный формат даты, пушистик! Используй ДД.ММ.ГГГГ (например, 15.03.2024)",
+            reply_markup=get_date_keyboard()
+        )
+        return
+
+    await process_delete_date_with_data(msg, state, clean_date)
+
+async def process_delete_date_with_data(msg: types.Message, state: FSMContext, date_str: str):
+    """Обработка удаления смены с данными"""
+    # Проверяем существование смены
+    exists = await check_shift_exists(date_str)
+    if not exists:
+        await msg.answer(
+            f"❌ Смена на дату {date_str} не найдена, котик!",
+            reply_markup=get_main_keyboard(msg.from_user.id)
+        )
+        await state.clear()
+        return
+
+    # Получаем данные смены
+    shift_data = await get_shift_data(date_str)
+    if not shift_data:
+        await msg.answer(
+            f"❌ Не удалось загрузить данные смены на {date_str}",
+            reply_markup=get_main_keyboard(msg.from_user.id)
+        )
+        await state.clear()
+        return
+
+    # Сохраняем дату в состоянии и показываем подтверждение
+    await state.update_data(delete_date=date_str, shift_data=shift_data)
+    
+    # Формируем сообщение с данными смены
+    shift_info = (
+        f"📅 *Дата:* {shift_data['date']}\n"
+        f"🕐 *Время:* {shift_data['start']} - {shift_data['end']}\n"
+        f"⏱ *Часы:* {shift_data['hours']}\n"
+    )
+    
+    # Добавляем финансовые данные если они есть
+    if shift_data.get('revenue') and str(shift_data['revenue']).strip():
+        shift_info += f"💰 *Выручка:* {shift_data['revenue']}₽\n"
+    if shift_data.get('tips') and str(shift_data['tips']).strip():
+        shift_info += f"💖 *Чаевые:* {shift_data['tips']}₽\n"
+    if shift_data.get('profit') and str(shift_data['profit']).strip():
+        shift_info += f"📊 *Прибыль:* {shift_data['profit']}₽\n"
+    
+    shift_info += "\n❌ *Ты уверена, что хочешь удалить эту смену?*\n"
+    shift_info += "Это действие нельзя отменить! 😿"
+    
+    await msg.answer(shift_info, parse_mode="Markdown", reply_markup=get_delete_confirmation_keyboard())
+    await state.set_state(Form.waiting_for_delete_confirmation)
+
+@dp.message(Form.waiting_for_delete_confirmation)
+async def process_delete_confirmation(msg: types.Message, state: FSMContext):
+    """Обработка подтверждения удаления"""
+    if msg.text == "❌ Нет, отмена":
+        await cancel_action(msg, state, "Удаление отменено, котик! 🐾")
+        return
+        
+    if msg.text != "✅ Да, удалить":
+        await msg.answer(
+            "Пожалуйста, выбери вариант подтверждения:",
+            reply_markup=get_delete_confirmation_keyboard()
+        )
+        return
+        
+    user_data = await state.get_data()
+    date_to_delete = user_data['delete_date']
+    
+    success = await delete_shift(date_to_delete)
+    if success:
+        await msg.answer(
+            f"✅ Смена на {date_to_delete} удалена! 💔\n\n"
+            f"Не переживай, котик! Всегда можно добавить новую смену! 🌸",
+            reply_markup=get_main_keyboard(msg.from_user.id)
+        )
+    else:
+        await msg.answer(
+            f"❌ Не удалось удалить смену на {date_to_delete}\n"
+            f"Попробуй еще раз или напиши разработчику! 🐾",
+            reply_markup=get_main_keyboard(msg.from_user.id)
+        )
+    
+    await state.clear()
 
 # Основные flow функции (адаптированные под новую систему)
 async def quick_today_start(msg: types.Message, state: FSMContext):
@@ -744,7 +1033,417 @@ async def process_date(msg: types.Message, state: FSMContext):
         )
         await state.set_state(Form.waiting_for_start)
 
-# [ДОБАВЬТЕ ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ИЗ ПРЕДЫДУЩЕЙ ВЕРСИИ...]
+# Обработчик подтверждения перезаписи
+@dp.message(Form.waiting_for_overwrite_confirm)
+async def process_overwrite_confirm(msg: types.Message, state: FSMContext):
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    user_response = clean_user_input(msg.text).lower()
+    
+    if user_response in ['да', 'yes', 'y', 'д']:
+        await msg.answer(
+            "Введи время смены в формате:\n"
+            "<начало>-<конец>\n\n"
+            "Примеры:\n"
+            "• 9-18\n"
+            "• 10:00-19:00",
+            reply_markup=get_cancel_keyboard()
+        )
+        await state.set_state(Form.waiting_for_start)
+    elif user_response in ['нет', 'no', 'n', 'н']:
+        await cancel_action(msg, state, "❌ Добавление смены отменено, котик!")
+    else:
+        await msg.answer("Пожалуйста, ответь 'да' или 'нет', пушистик! 🌸", reply_markup=get_cancel_keyboard())
+
+@dp.message(Form.waiting_for_start)
+async def process_start(msg: types.Message, state: FSMContext):
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    time_input = msg.text.strip()
+    
+    # Используем умный парсинг времени
+    time_parts = await parse_flexible_time(time_input)
+    if not time_parts:
+        await msg.answer(
+            "❌ Неверный формат времени, котик!\n"
+            "Используй: начало-конец\n"
+            "Примеры: 9-18, 10:00-19:00",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+    
+    start_time, end_time = time_parts
+    
+    # Проверяем валидность времени
+    try:
+        datetime.strptime(start_time, "%H:%M")
+        datetime.strptime(end_time, "%H:%M")
+    except ValueError:
+        await msg.answer(
+            "❌ Неверный формат времени, пушистик!\n"
+            "Используй ЧЧ:ММ, например: 09:00-18:00",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+        
+    await state.update_data(start=start_time, end=end_time)
+    
+    user_data = await state.get_data()
+    date_msg = user_data['date']
+    is_overwrite = user_data.get('is_overwrite', False)
+    
+    success = await add_shift(date_msg, start_time, end_time, reset_financials=is_overwrite)
+    
+    if success:
+        # Если это перезапись, сбрасываем финансовые данные и предлагаем ввести заново
+        if is_overwrite:
+            await msg.answer(
+                f"✅ Смена {date_msg} ({start_time}-{end_time}) перезаписана! 🩷\n\n"
+                f"Теперь нужно заново ввести финансовые данные:\n"
+                f"1. Введи сумму выручки за этот день:",
+                reply_markup=get_cancel_keyboard()
+            )
+            # Сохраняем данные для последующего ввода
+            await state.update_data(
+                revenue_date=date_msg,
+                tips_date=date_msg,
+                is_overwrite_flow=True
+            )
+            await state.set_state(Form.waiting_for_revenue)
+        else:
+            await msg.answer(
+                f"✅ Смена {date_msg} ({start_time}-{end_time}) добавлена! 🩷\n\nОтличная работа, котик! 🌟",
+                reply_markup=get_main_keyboard(msg.from_user.id)
+            )
+            await state.clear()
+    else:
+        await msg.answer("❌ Ошибка при добавлении смены, котик! 🐾", reply_markup=get_main_keyboard(msg.from_user.id))
+        await state.clear()
+
+# REVENUE FLOW
+@dp.message(Form.waiting_for_revenue_date)
+async def process_revenue_date(msg: types.Message, state: FSMContext):
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    clean_date = clean_user_input(msg.text)
+    
+    # Проверяем существование смены
+    exists = await check_shift_exists(clean_date)
+    if not exists:
+        await msg.answer(
+            f"❌ Смена на дату {clean_date} не найдена, котик! Сначала добавь смену через /add_shift 🐾",
+            reply_markup=get_main_keyboard(msg.from_user.id)
+        )
+        await state.clear()
+        return
+        
+    await state.update_data(revenue_date=clean_date)
+    await msg.answer("Введи сумму выручки (только число):", reply_markup=get_cancel_keyboard())
+    await state.set_state(Form.waiting_for_revenue)
+
+@dp.message(Form.waiting_for_revenue)
+async def process_revenue(msg: types.Message, state: FSMContext):
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    user_data = await state.get_data()
+    date_msg = user_data['revenue_date']
+    rev = clean_user_input(msg.text)
+    
+    # Проверяем, что введено число
+    try:
+        float(rev)
+    except ValueError:
+        await msg.answer("❌ Неверный формат числа, пушистик! Введи только цифры (например: 5000)", reply_markup=get_cancel_keyboard())
+        return
+    
+    success = await update_value(date_msg, "выручка", rev)
+    if success:
+        # Если это поток перезаписи, переходим к вводу чаевых
+        if user_data.get('is_overwrite_flow'):
+            # Сохраняем выручку в состоянии для финального сообщения
+            await state.update_data(revenue=rev)
+            await msg.answer(f"✅ Выручка {rev}₽ обновлена! 💰✨\n\nТеперь введи сумму чаевых:", reply_markup=get_cancel_keyboard())
+            await state.set_state(Form.waiting_for_tips)
+        else:
+            await msg.answer(
+                f"✅ Выручка {rev}₽ обновлена для даты {date_msg}! 💰✨\n\nМолодец, котик! 🌟",
+                reply_markup=get_main_keyboard(msg.from_user.id)
+            )
+            await state.clear()
+    else:
+        await msg.answer("❌ Не удалось обновить выручку, котик! 🐾", reply_markup=get_main_keyboard(msg.from_user.id))
+        await state.clear()
+
+# TIPS FLOW
+@dp.message(Form.waiting_for_tips_date)
+async def process_tips_date(msg: types.Message, state: FSMContext):
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    clean_date = clean_user_input(msg.text)
+    
+    # Проверяем существование смены
+    exists = await check_shift_exists(clean_date)
+    if not exists:
+        await msg.answer(
+            f"❌ Смена на дату {clean_date} не найдена, котик! Сначала добавь смену через /add_shift 🐾",
+            reply_markup=get_main_keyboard(msg.from_user.id)
+        )
+        await state.clear()
+        return
+        
+    await state.update_data(tips_date=clean_date)
+    await msg.answer("Введи сумму чаевых (число):", reply_markup=get_cancel_keyboard())
+    await state.set_state(Form.waiting_for_tips)
+
+@dp.message(Form.waiting_for_tips)
+async def process_tips(msg: types.Message, state: FSMContext):
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    user_data = await state.get_data()
+    date_msg = user_data['tips_date']
+    tips_amount = clean_user_input(msg.text)
+    
+    # Проверяем, что введено число
+    try:
+        float(tips_amount)
+    except ValueError:
+        await msg.answer("❌ Неверный формат числа, пушистик! Введи только цифры (например: 500)", reply_markup=get_cancel_keyboard())
+        return
+    
+    success = await update_value(date_msg, "чай", tips_amount)
+    if success:
+        if user_data.get('is_overwrite_flow'):
+            # Получаем все данные для финального сообщения
+            start = user_data.get('start', '?')
+            end = user_data.get('end', '?')
+            revenue = user_data.get('revenue', '?')
+            
+            await msg.answer(
+                f"✅ Чаевые {tips_amount}₽ добавлены! ☕️💖\n\n"
+                f"🎉 **Все данные за {date_msg} успешно перезаписаны!** 🌟\n"
+                f"• Время: {start}-{end}\n"
+                f"• Выручка: {revenue}₽\n"
+                f"• Чаевые: {tips_amount}₽\n\n"
+                f"Отличная работа, котик! 🐾",
+                reply_markup=get_main_keyboard(msg.from_user.id)
+            )
+        else:
+            await msg.answer(
+                f"✅ Чаевые {tips_amount}₽ добавлены для даты {date_msg}! ☕️💖\n\nПушистик, ты лучшая! 🌸",
+                reply_markup=get_main_keyboard(msg.from_user.id)
+            )
+    
+    await state.clear()
+
+# EDIT FLOW
+@dp.message(Form.waiting_for_edit_date)
+async def process_edit_date(msg: types.Message, state: FSMContext):
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    clean_date = clean_user_input(msg.text)
+    
+    # Проверяем существование смены
+    exists = await check_shift_exists(clean_date)
+    if not exists:
+        await msg.answer(
+            f"❌ Смена на дату {clean_date} не найдена, котик! Сначала добавь смену через /add_shift 🐾",
+            reply_markup=get_main_keyboard(msg.from_user.id)
+        )
+        await state.clear()
+        return
+        
+    await state.update_data(edit_date=clean_date)
+    await msg.answer(
+        "Что редактируем, пушистик?",
+        reply_markup=get_edit_keyboard()
+    )
+    await state.set_state(Form.waiting_for_edit_field)
+
+@dp.message(Form.waiting_for_edit_field)
+async def process_edit_field(msg: types.Message, state: FSMContext):
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    field = clean_user_input(msg.text).lower()
+    if field not in ["чай", "начало", "конец", "выручка"]:
+        await msg.answer("❌ Такого параметра нет, котик! Используй: чай, начало, конец, выручка 🐾", reply_markup=get_edit_keyboard())
+        return
+    
+    await state.update_data(edit_field=field)
+    await msg.answer(f"Введи новое значение для {field}:", reply_markup=get_cancel_keyboard())
+    await state.set_state(Form.waiting_for_edit_value)
+
+@dp.message(Form.waiting_for_edit_value)
+async def process_edit_value(msg: types.Message, state: FSMContext):
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    user_data = await state.get_data()
+    date_msg = user_data['edit_date']
+    field = user_data['edit_field']
+    value = clean_user_input(msg.text)
+    
+    success = await update_value(date_msg, field, value)
+    if success:
+        await msg.answer(
+            f"✅ {field} изменен на {value} для даты {date_msg}! 🩷\n\nМолодец, котик! 🌟",
+            reply_markup=get_main_keyboard(msg.from_user.id)
+        )
+    else:
+        await msg.answer("❌ Ошибка: не удалось сохранить изменения, пушистик! 🐾", reply_markup=get_main_keyboard(msg.from_user.id))
+    
+    await state.clear()
+
+# PROFIT FLOW
+@dp.message(Form.waiting_for_profit_date)
+async def process_profit_date(msg: types.Message, state: FSMContext):
+    if msg.text == "❌ Отмена":
+        await cancel_action(msg, state)
+        return
+        
+    clean_date = clean_user_input(msg.text)
+    
+    # Проверяем валидность даты
+    try:
+        day = datetime.strptime(clean_date, "%d.%m.%Y").date()
+        if day > dt.today():
+            await msg.answer("❌ Этот день ещё не наступил, котик! 🐾", reply_markup=get_main_keyboard(msg.from_user.id))
+            await state.clear()
+            return
+    except ValueError:
+        await msg.answer("❌ Неверный формат даты, пушистик! Используй ДД.ММ.ГГГГ", reply_markup=get_main_keyboard(msg.from_user.id))
+        await state.clear()
+        return
+
+    # Проверяем существование смены
+    exists = await check_shift_exists(clean_date)
+    if not exists:
+        await msg.answer(f"❌ Смена на дату {clean_date} не найдена, котик! Сначала добавь смену через /add_shift 🐾", reply_markup=get_main_keyboard(msg.from_user.id))
+        await state.clear()
+        return
+
+    profit_value = await get_profit(clean_date)
+    if profit_value is None:
+        await msg.answer("❌ Нет данных о прибыли на эту дату, котик! 😿", reply_markup=get_main_keyboard(msg.from_user.id))
+        await state.clear()
+        return
+
+    await show_profit_result(msg, clean_date, profit_value)
+    await state.clear()
+
+async def show_profit_result(msg: types.Message, date: str, profit_value: float):
+    """Показать результат расчета прибыли"""
+    try:
+        profit_float = float(profit_value)
+        logger.info(f"💰 Final profit calculation: {profit_float} for {date}")
+    except ValueError:
+        logger.error(f"❌ Cannot convert profit to float: {profit_value}")
+        profit_float = 0
+
+    # Обновленные сообщения с учетом новой формулы
+    if profit_float < 4000:
+        text = f"📊 Твоя прибыль за {date}: {profit_float:.2f}₽.\nНе расстраивайся, котик 🐾 — ты отлично поработала! Каждая смена — это опыт! 🌸"
+    elif 4000 <= profit_float <= 6000:
+        text = f"📊 Твоя прибыль за {date}: {profit_float:.2f}₽.\nНеплохая смена, пушистик 😺 — беги радовать себя чем-то вкусным! Ты это заслужила! 💖"
+    else:
+        text = f"📊 Твоя прибыль за {date}: {profit_float:.2f}₽.\nТы просто суперстар 🌟 — ещё немного, и миллион твой! Горжусь тобой! 🎉"
+    
+    await msg.answer(text, reply_markup=get_main_keyboard(msg.from_user.id))
+
+# ADMIN-ONLY COMMANDS
+@dp.message(Command("add_week"))
+async def add_week_start(msg: types.Message, state: FSMContext):
+    """Начало пакетного добавления смен на неделю"""
+    if not check_access(msg): return
+    
+    if not is_admin(msg.from_user.id):
+        await msg.answer("❌ Эта команда доступна только администратору, котик! 🐾")
+        return
+    
+    # Получаем даты текущей недели
+    today = datetime.now().date()
+    start_of_week = today - timedelta(days=today.weekday())  # Понедельник
+    end_of_week = start_of_week + timedelta(days=6)  # Воскресенье
+    
+    week_dates = []
+    current_date = start_of_week
+    while current_date <= end_of_week:
+        week_dates.append(current_date.strftime("%d.%m.%Y"))
+        current_date += timedelta(days=1)
+    
+    await state.update_data(week_dates=week_dates)
+    
+    await msg.answer(
+        f"📅 **Пакетное добавление смен на неделю:**\n"
+        f"Период: {week_dates[0]} - {week_dates[-1]}\n\n"
+        f"Введи время смен в формате:\n"
+        f"<начало>-<конец>\n\n"
+        f"Примеры:\n"
+        f"• 9-18\n"
+        f"• 10:00-19:00\n"
+        f"• 0900-1800\n\n"
+        f"Планируем неделю! 🚀",
+        reply_markup=get_cancel_keyboard()
+    )
+    await state.set_state(Form.waiting_for_week_schedule)
+
+# STATS FLOW - только для админа
+@dp.message(Command("stats"))
+async def stats_start(msg: types.Message, state: FSMContext):
+    if not check_access(msg): return
+    
+    if not is_admin(msg.from_user.id):
+        await msg.answer("❌ Эта команда доступна только администратору, котик! 🐾")
+        return
+        
+    if storage_type == 'google_sheets':
+        await msg.answer("❌ Статистика временно недоступна при использовании Google Sheets, котик! Используй SQLite хранилище 🐾")
+        return
+        
+    if not db_manager:
+        await msg.answer("❌ Модуль статистики недоступен, пушистик! 🐾")
+        return
+        
+    await msg.answer("Введи начальную дату для статистики (ДД.ММ.ГГГГ):", reply_markup=get_cancel_keyboard())
+    await state.set_state(Form.waiting_for_stats_start)
+
+# EXPORT FLOW - только для админа
+@dp.message(Command("export"))
+async def export_start(msg: types.Message, state: FSMContext):
+    if not check_access(msg): return
+    
+    if not is_admin(msg.from_user.id):
+        await msg.answer("❌ Эта команда доступна только администратору, котик! 🐾")
+        return
+        
+    if storage_type == 'google_sheets':
+        await msg.answer("❌ Экспорт временно недоступен при использовании Google Sheets, котик! Используй SQLite хранилище 🐾")
+        return
+        
+    if not db_manager:
+        await msg.answer("❌ Модуль экспорта недоступен, пушистик! 🐾")
+        return
+        
+    await msg.answer("Введи начальную дату для экспорта (ДД.ММ.ГГГГ):", reply_markup=get_cancel_keyboard())
+    await state.set_state(Form.waiting_for_export_start)
+
+# [ОСТАВШИЕСЯ ОБРАБОТЧИКИ СОСТОЯНИЙ ДЛЯ АДМИНСКИХ КОМАНД...]
 
 @dp.message()
 async def echo(message: types.Message):
